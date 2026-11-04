@@ -123,7 +123,7 @@ nonisolated enum KeyboardLaunchRequest: Equatable, Sendable {
     )
 
     init?(url: URL) {
-        guard url.scheme == "hex-dictation", url.host == "keyboard" else { return nil }
+        guard url.scheme == AppIdentity.urlScheme, url.host == "keyboard" else { return nil }
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let query = components?.queryItems ?? []
 
@@ -181,7 +181,7 @@ nonisolated enum KeyboardLaunchRequest: Equatable, Sendable {
 
     var url: URL {
         var components = URLComponents()
-        components.scheme = "hex-dictation"
+        components.scheme = AppIdentity.urlScheme
         components.host = "keyboard"
 
         var items: [URLQueryItem] = []
@@ -302,7 +302,7 @@ nonisolated struct KeyboardSnapshot: Codable, Equatable, Sendable {
 
 @MainActor
 struct KeyboardBridge {
-    static let appGroup = "group.com.kitlangton.hex.mobile"
+    static let appGroup = AppIdentity.appGroup
 
     private enum Key {
         static let command = "keyboard.command"

@@ -25,7 +25,7 @@ actor ParakeetTranscriber: LocalTranscribing {
         var errorDescription: String? {
             switch self {
             case .notPrepared:
-                "Parakeet V2 is not ready."
+                "Parakeet is not ready."
             case .emptyTranscript:
                 "Parakeet did not detect any speech."
             }
@@ -34,13 +34,28 @@ actor ParakeetTranscriber: LocalTranscribing {
 
     private var manager: AsrManager?
 
-    nonisolated let displayName = "Parakeet V2"
-    let languageName = "English"
+    private let variant: ParakeetVariant
+    nonisolated let displayName: String
+    let languageName: String
 
-    nonisolated static var hasCachedModel: Bool {
-        AsrModels.modelsExist(
-            at: AsrModels.defaultCacheDirectory(for: .v2),
-            version: .v2
+    init(variant: ParakeetVariant = .v2) {
+        self.variant = variant
+        self.displayName = variant.displayName
+        self.languageName = variant.languageName
+    }
+
+    private static func modelVersion(for variant: ParakeetVariant) -> AsrModelVersion {
+        switch variant {
+        case .v2: .v2
+        case .v3: .v3
+        }
+    }
+
+    nonisolated static func hasCachedModel(for variant: ParakeetVariant) -> Bool {
+        let version = modelVersion(for: variant)
+        return AsrModels.modelsExist(
+            at: AsrModels.defaultCacheDirectory(for: version),
+            version: version
         )
     }
 
@@ -50,7 +65,7 @@ actor ParakeetTranscriber: LocalTranscribing {
         guard manager == nil else { return }
 
         let models = try await AsrModels.downloadAndLoad(
-            version: .v2,
+            version: Self.modelVersion(for: variant),
             progressHandler: { progress in
                 progressHandler(
                     ModelPreparationProgress(

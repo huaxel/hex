@@ -157,7 +157,7 @@ struct ContentView: View {
                 }
 
                 settingsCard
-                ExperimentsCard()
+                ExperimentsCard(dictation: dictation)
                 practiceField
             }
             .frame(maxWidth: 500)

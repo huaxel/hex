@@ -1,0 +1,8 @@
+// Production defaults. Personal development overrides stay in ios/build.
+DEVELOPMENT_TEAM = QC99C9JE59
+HEX_BUNDLE_ID_PREFIX = com.kitlangton.hex
+HEX_APP_GROUP_IDENTIFIER = group.com.kitlangton.hex.mobile
+HEX_URL_SCHEME = hex-dictation
+HEX_DISPLAY_NAME = Hex
+
+#include? "build/Local.xcconfig"

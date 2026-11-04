@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Hex</string>
+	<string>$(HEX_DISPLAY_NAME)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -26,15 +26,21 @@
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>CFBundleURLName</key>
-			<string>com.kitlangton.hex.mobile.keyboard-session</string>
+			<string>$(HEX_BUNDLE_ID_PREFIX).mobile.keyboard-session</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>hex-dictation</string>
+				<string>$(HEX_URL_SCHEME)</string>
 			</array>
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>HexAppGroupIdentifier</key>
+	<string>$(HEX_APP_GROUP_IDENTIFIER)</string>
+	<key>HexKeyboardBundleIdentifier</key>
+	<string>$(HEX_BUNDLE_ID_PREFIX).mobile.keyboard</string>
+	<key>HexURLScheme</key>
+	<string>$(HEX_URL_SCHEME)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSMicrophoneUsageDescription</key>

@@ -2139,6 +2139,10 @@ Windows `hex app` -> one tray process, Rune window // dev.rune-ui-windows
 ├── Modes app icons: the executable's first icon (PrivateExtractIconsW)
 └── Not yet: custom caption
 iOS prototype -> Record/transcribe/copy and keyboard handoff
+└── Experiments › Local Parakeet v3 (off) -> multilingual on-device Core ML dictation // ios.local-parakeet-v3
+    ├── On -> prepare/reuse v3; persist the choice; never silently fall back to Apple Speech
+    ├── Off -> restore automatic Apple Speech/V2; keep downloaded model files
+    └── Switch only while no preparation, recording or transcription is active; see ios/README.md
 Unmerged Windows / deferred features -> Not part of this map
 ```
 
@@ -2147,7 +2151,13 @@ Sources: [meeting.rs](../../src/meeting.rs),
 [control/developer_control.rs](../../src/control/developer_control.rs),
 `SCENES` in [rune_ui.rs](../../src/rune_ui.rs), [iOS guide](../../ios/README.md).
 iOS physical-device proof and temporary-WAV failure cleanup remain gaps;
-best-effort deletion is not guaranteed deletion.
+best-effort deletion is not guaranteed deletion. The local-v3 policy checks
+live in `ios/HEXMobileTests/LocalSpeechSettingsTests.swift` and the switching
+regressions in `DictationControllerTests.swift`; their existence does not
+prove a passing run or real microphone-to-keyboard behavior. The
+[iOS guide](../../ios/README.md#physical-local-v3-check) describes that device check
+and records the 2026-11-04 user-reported local-v3 microphone/keyboard smoke test
+under observed verification; sustained background behavior remains unproven.
 
 `dev.rune-ui` lives in [rune_ui.rs](../../src/rune_ui.rs) and its pane modules;
 its tests drive the Rune runtime headlessly (navigation; General rows per

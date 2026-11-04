@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Hex Keyboard</string>
+	<string>$(HEX_DISPLAY_NAME) Keyboard</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -20,6 +20,12 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>HexAppGroupIdentifier</key>
+	<string>$(HEX_APP_GROUP_IDENTIFIER)</string>
+	<key>HexKeyboardBundleIdentifier</key>
+	<string>$(HEX_BUNDLE_ID_PREFIX).mobile.keyboard</string>
+	<key>HexURLScheme</key>
+	<string>$(HEX_URL_SCHEME)</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>

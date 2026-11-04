@@ -59,6 +59,7 @@ final class DictationController {
 
     private var transcriber: any LocalTranscribing
     private let transcriberFactory: () async -> any LocalTranscribing
+    private let localSpeechSettings: LocalSpeechSettings
     private let audio: any AudioManaging
     private let keyboardBridge: KeyboardBridge
     private let fileManager: FileManager
@@ -137,6 +138,7 @@ final class DictationController {
         keyboardBridge: KeyboardBridge? = nil,
         transcriber: (any LocalTranscribing)? = nil,
         transcriberFactory: (() async -> any LocalTranscribing)? = nil,
+        localSpeechSettings: LocalSpeechSettings = LocalSpeechSettings(),
         fileManager: FileManager = .default,
         now: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 },
         autoPrepareOnInit: Bool = true,
@@ -149,7 +151,10 @@ final class DictationController {
         self.audio = resolvedAudio
         self.keyboardBridge = resolvedBridge
         self.transcriber = initialTranscriber
-        self.transcriberFactory = transcriberFactory ?? Self.defaultTranscriber
+        self.transcriberFactory = transcriberFactory ?? {
+            await Self.defaultTranscriber(settings: localSpeechSettings)
+        }
+        self.localSpeechSettings = localSpeechSettings
         self.fileManager = fileManager
         self.now = now
         self.warmDuration = resolvedBridge.warmDuration
@@ -161,7 +166,7 @@ final class DictationController {
             await UIApplication.shared.open(url)
         }
 
-        let hasCachedModel = ParakeetTranscriber.hasCachedModel
+        let hasCachedModel = ParakeetTranscriber.hasCachedModel(for: localSpeechSettings.parakeetVariant)
         resolvedBridge.publish(.offline)
         resolvedBridge.setModelInstalled(hasCachedModel)
 
@@ -173,8 +178,8 @@ final class DictationController {
         }
 
         if autoPrepareOnInit {
-            if hasCachedModel {
-                engineName = "Parakeet V2"
+            if localSpeechSettings.parakeetV3Enabled || hasCachedModel {
+                engineName = localSpeechSettings.parakeetVariant.displayName
                 prepareModel()
             } else if #available(iOS 26.0, *), AppleSpeechTranscriber.isAvailable {
                 Task { [weak self] in
@@ -216,6 +221,18 @@ final class DictationController {
     }
 
     // MARK: - Settings
+
+    var isLocalParakeetV3Enabled: Bool { localSpeechSettings.parakeetV3Enabled }
+    var canChangeSpeechEngine: Bool { !isRecording && !phase.isBusy }
+
+    @discardableResult
+    func setLocalParakeetV3Enabled(_ enabled: Bool) -> Bool {
+        guard canChangeSpeechEngine else { return false }
+        guard localSpeechSettings.parakeetV3Enabled != enabled else { return true }
+        localSpeechSettings.parakeetV3Enabled = enabled
+        prepareModel()
+        return true
+    }
 
     func setWarmDuration(_ duration: WarmSessionDuration) {
         warmDuration = duration
@@ -627,12 +644,14 @@ final class DictationController {
     func prepareModel() {
         modelPrepGeneration &+= 1
         let prepGen = modelPrepGeneration
+        isModelReady = false
         phase = .preparingModel
         copied = false
         modelPreparation = ModelPreparationProgress(
             fractionCompleted: 0,
             detail: "Checking model files"
         )
+        publishKeyboardSnapshot()
 
         Task {
             do {
@@ -657,7 +676,9 @@ final class DictationController {
                 }
             } catch {
                 guard self.modelPrepGeneration == prepGen else { return }
-                self.keyboardBridge.setModelInstalled(ParakeetTranscriber.hasCachedModel)
+                self.keyboardBridge.setModelInstalled(
+                    ParakeetTranscriber.hasCachedModel(for: self.localSpeechSettings.parakeetVariant)
+                )
                 self.pendingHandoff = nil
                 self.phase = .failed(error.localizedDescription)
                 self.publishKeyboardSnapshot()
@@ -665,7 +686,10 @@ final class DictationController {
         }
     }
 
-    private static func defaultTranscriber() async -> any LocalTranscribing {
+    private static func defaultTranscriber(settings: LocalSpeechSettings) async -> any LocalTranscribing {
+        if settings.parakeetV3Enabled {
+            return ParakeetTranscriber(variant: .v3)
+        }
         if #available(iOS 26.0, *),
            AppleSpeechTranscriber.isAvailable,
            let locale = await AppleSpeechTranscriber.preferredLocale() {

@@ -16,6 +16,12 @@ sidebar and lists every Labs feature as one flat row (name, one-line
 description, toggle), each **off by default**, plus Send feedback and Run
 setup again.
 
+The iOS prototype has its own **Experiments** card, not the desktop settings
+registry. **Local Parakeet v3** (`ios.local-parakeet-v3`) is a containing-app
+preference, off by default, gated before its model is prepared; it never
+loads a model in the keyboard extension. See the
+[iOS capability and physical-device checks](../../ios/README.md#capabilities).
+
 ```ts
 Feature             Pane  Toggle (settings.json, hex settings)   On: what it does
 ├── Meetings (beta) yes   meetings.enabled             (macOS)   Meetings joins the sidebar: call detection, recording, transcripts

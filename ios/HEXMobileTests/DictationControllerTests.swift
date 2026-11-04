@@ -457,6 +457,69 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(bridge.snapshot().audioLevel, 0)
     }
 
+    func testLocalV3OptInPreparesAndCanBeTurnedOffAfterReadiness() async throws {
+        let speechSettings = LocalSpeechSettings(defaults: defaults)
+        let transcriber = ControlledTranscriber()
+        let bridge = KeyboardBridge(defaults: defaults)
+        let controller = DictationController(
+            audio: FakeAudioManager(),
+            keyboardBridge: bridge,
+            transcriber: transcriber,
+            transcriberFactory: { transcriber },
+            localSpeechSettings: speechSettings,
+            autoPrepareOnInit: false
+        )
+
+        XCTAssertFalse(controller.isLocalParakeetV3Enabled)
+        XCTAssertTrue(controller.setLocalParakeetV3Enabled(true))
+        XCTAssertTrue(speechSettings.parakeetV3Enabled)
+        XCTAssertEqual(controller.phase, .preparingModel)
+        XCTAssertFalse(controller.isModelReady)
+        XCTAssertEqual(bridge.snapshot().state, .offline)
+        XCTAssertFalse(controller.setLocalParakeetV3Enabled(false))
+        XCTAssertTrue(speechSettings.parakeetV3Enabled)
+        try await settle()
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertTrue(controller.isModelReady)
+
+        XCTAssertTrue(controller.setLocalParakeetV3Enabled(false))
+        XCTAssertFalse(speechSettings.parakeetV3Enabled)
+        XCTAssertFalse(controller.isModelReady)
+        try await settle()
+        XCTAssertEqual(controller.phase, .ready)
+    }
+
+    func testLocalV3CannotSwitchDuringRecordingOrAcceptedTranscription() async throws {
+        let speechSettings = LocalSpeechSettings(defaults: defaults)
+        let transcriber = ControlledTranscriber()
+        let controller = DictationController(
+            audio: FakeAudioManager(),
+            keyboardBridge: KeyboardBridge(defaults: defaults),
+            transcriber: transcriber,
+            transcriberFactory: { transcriber },
+            localSpeechSettings: speechSettings,
+            autoPrepareOnInit: false
+        )
+        controller.prepareModel()
+        try await settle()
+        controller.startRecording()
+        try await settle()
+        XCTAssertEqual(controller.phase, .recording)
+        XCTAssertFalse(controller.setLocalParakeetV3Enabled(true))
+        XCTAssertFalse(speechSettings.parakeetV3Enabled)
+
+        await transcriber.armSuspension()
+        controller.finishRecording()
+        try await settle()
+        XCTAssertEqual(controller.phase, .transcribing)
+        XCTAssertFalse(controller.setLocalParakeetV3Enabled(true))
+        XCTAssertFalse(speechSettings.parakeetV3Enabled)
+        await transcriber.resumeSuspended(with: "accepted words")
+        try await settle()
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertEqual(controller.transcript, "Accepted words.")
+    }
+
     private func settle() async throws {
         for _ in 0..<8 {
             try await Task.sleep(for: .milliseconds(25))
