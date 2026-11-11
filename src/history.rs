@@ -17,6 +17,8 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+pub mod captures;
+pub mod playback;
 pub mod recordings;
 pub mod stats;
 pub mod versions;
@@ -160,16 +162,34 @@ impl HistoryEntry {
                 .sum::<usize>()
     }
 
-    fn matches(&self, needle: &str) -> bool {
-        let matches_field = |field: &str| field.to_lowercase().contains(needle);
-        matches_field(&self.raw_text)
+    /// Whether any searched field contains `needle` (already lowercased).
+    /// `scratch` is reused across a whole search so plain-ASCII fields,
+    /// almost all of them, are lowercased without a new allocation.
+    fn matches(&self, needle: &str, scratch: &mut String) -> bool {
+        let mut matches_field = |field: &str| field_contains(field, needle, scratch);
+        (self.raw_text != self.final_text && matches_field(&self.raw_text))
             || matches_field(&self.final_text)
-            || self.application.as_deref().is_some_and(matches_field)
-            || self.model.as_deref().is_some_and(matches_field)
+            || self.application.as_deref().is_some_and(&mut matches_field)
+            || self.model.as_deref().is_some_and(&mut matches_field)
             || self
                 .processing
                 .as_ref()
                 .is_some_and(|processing| matches_field(&processing.profile))
+    }
+}
+
+/// `field.to_lowercase().contains(needle)`, lowercasing an ASCII field
+/// into `scratch` instead of a new string.
+fn field_contains(field: &str, needle: &str, scratch: &mut String) -> bool {
+    if field.is_ascii() {
+        if field.len() < needle.len() {
+            return false;
+        }
+        scratch.clear();
+        scratch.extend(field.chars().map(|c| c.to_ascii_lowercase()));
+        scratch.contains(needle)
+    } else {
+        field.to_lowercase().contains(needle)
     }
 }
 
@@ -257,6 +277,10 @@ pub struct HistoryStore {
     /// listener and the History pane in separate processes, so each store
     /// rereads the file when another process changed it.
     file_state: Option<(SystemTime, u64)>,
+    /// Changes whenever what a search could return may have changed: a
+    /// record, delete, edit, clear, prune, retention change, or a reread of
+    /// another process's write. The History pane searches again only then.
+    revision: u64,
 }
 
 fn file_state(path: &std::path::Path) -> Option<(SystemTime, u64)> {
@@ -279,6 +303,7 @@ impl HistoryStore {
             prune_pending: false,
             prune_error_reported: false,
             file_state: None,
+            revision: 0,
         };
         store.file_state = file_state(&store.path);
         match fs::read(&store.path) {
@@ -339,6 +364,27 @@ impl HistoryStore {
             .max(max_entry_id.map_or(1, |id| id.saturating_add(1)));
         self.entries = loaded.entries;
         self.entries.sort_by_key(|entry| entry.id);
+        self.touch();
+    }
+
+    fn touch(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// The store's revision, which moves whenever a search could answer
+    /// differently. An oldest
+    /// entry past retention is pruned in memory first, so the revision also
+    /// moves when time expires one; the idle worker saves that prune.
+    pub fn revision(&mut self, now_ms: u64) -> u64 {
+        if let Some(max_age) = self.retention.max_age_ms()
+            && self
+                .entries
+                .first()
+                .is_some_and(|entry| entry.timestamp_ms < now_ms.saturating_sub(max_age))
+        {
+            self.prune(now_ms);
+        }
+        self.revision
     }
 
     /// Record one successful result. Returns the stable entry ID, or `None`
@@ -397,6 +443,34 @@ impl HistoryStore {
             return Err(error);
         }
         Ok(true)
+    }
+
+    /// Delete every entry in `ids` with one save. Returns how many existed;
+    /// unknown ids are ignored. A failed save restores every removed entry
+    /// where it was, so the deletion can be retried.
+    pub fn delete_many(&mut self, ids: &[u64]) -> io::Result<usize> {
+        let mut removed = Vec::new();
+        let mut kept = Vec::with_capacity(self.entries.len());
+        for (index, entry) in std::mem::take(&mut self.entries).into_iter().enumerate() {
+            if ids.contains(&entry.id) {
+                removed.push((index, entry));
+            } else {
+                kept.push(entry);
+            }
+        }
+        self.entries = kept;
+        let count = removed.len();
+        if count == 0 {
+            return Ok(0);
+        }
+        if let Err(error) = self.persist() {
+            for (index, entry) in removed {
+                let at = index.min(self.entries.len());
+                self.entries.insert(at, entry);
+            }
+            return Err(error);
+        }
+        Ok(count)
     }
 
     /// Replace entry `id`'s text with `transcript`, such as a transcription
@@ -470,6 +544,7 @@ impl HistoryStore {
             return Ok(());
         }
         self.retention = retention;
+        self.touch();
         if self.prune(now_ms) {
             self.persist()?;
         }
@@ -499,9 +574,10 @@ impl HistoryStore {
             .retention
             .max_age_ms()
             .map(|max_age| now_ms.saturating_sub(max_age));
+        let mut scratch = String::new();
         self.entries()
             .filter(|entry| cutoff.is_none_or(|cutoff| entry.timestamp_ms >= cutoff))
-            .filter(|entry| needle.is_empty() || entry.matches(&needle))
+            .filter(|entry| needle.is_empty() || entry.matches(&needle, &mut scratch))
             .take(MAX_SEARCH_RESULTS)
             .collect()
     }
@@ -577,10 +653,17 @@ impl HistoryStore {
             }
         }
         self.prune_pending |= changed;
+        if changed {
+            self.touch();
+        }
         changed
     }
 
+    /// Saves the entries. Every change to them goes through here, so it
+    /// moves the revision whether or not the save works (a failed save may
+    /// keep the change, as a record does, or roll it back).
     fn persist(&mut self) -> io::Result<()> {
+        self.touch();
         let saved = SavedHistory {
             version: VERSION,
             next_id: self.next_id,
@@ -675,6 +758,11 @@ impl History {
         self.synced().delete(id)
     }
 
+    /// Delete every entry in `ids` with one save ([`HistoryStore::delete_many`]).
+    pub fn delete_many(&self, ids: &[u64]) -> io::Result<usize> {
+        self.synced().delete_many(ids)
+    }
+
     pub fn clear(&self) -> io::Result<()> {
         self.synced().clear()
     }
@@ -696,12 +784,24 @@ impl History {
     }
 
     /// Bounded snapshot of matching entries, newest first.
+    #[allow(dead_code)]
     pub fn search(&self, query: &str) -> Vec<HistoryEntry> {
-        self.synced()
-            .search(query, now_ms())
-            .into_iter()
-            .cloned()
-            .collect()
+        self.search_at(query).1
+    }
+
+    /// The store's revision ([`HistoryStore::revision`]), after picking up
+    /// another process's write.
+    pub fn revision(&self) -> u64 {
+        self.synced().revision(now_ms())
+    }
+
+    /// [`History::search`] with the revision it was read at.
+    pub fn search_at(&self, query: &str) -> (u64, Vec<HistoryEntry>) {
+        let now = now_ms();
+        let mut store = self.synced();
+        let revision = store.revision(now);
+        let entries = store.search(query, now).into_iter().cloned().collect();
+        (revision, entries)
     }
 
     /// The newest `count` reusable entries, newest first
@@ -805,6 +905,54 @@ mod tests {
             .unwrap_or_default();
         ids.sort_unstable();
         ids
+    }
+
+    #[test]
+    fn field_matching_agrees_with_full_lowercasing() {
+        let fields = [
+            "",
+            "Hello World",
+            "HELLO",
+            "Zed",
+            "Straße",
+            "İstanbul",
+            "ÉCOLE normale",
+            "mixed ASCII then Ω",
+        ];
+        let queries = [
+            "", "hello", "world", "o w", "ss", "straße", "i̇", "école", "ω", "zed!",
+        ];
+        let mut scratch = String::new();
+        for field in fields {
+            for query in queries {
+                let needle = query.to_lowercase();
+                assert_eq!(
+                    field_contains(field, &needle, &mut scratch),
+                    field.to_lowercase().contains(&needle),
+                    "{field:?} / {query:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn search_still_finds_raw_text_that_differs_from_the_final_text() {
+        let path = temp_path("search-raw");
+        let mut store = HistoryStore::open(path, HistoryRetention::Week, 0);
+        let mut same = draft("Same Words");
+        same.raw_text = same.final_text.clone();
+        let same = store.record(same, 1_000).unwrap().unwrap();
+        let rewritten = store.record(draft("Rewritten"), 2_000).unwrap().unwrap();
+        let ids = |query: &str| -> Vec<u64> {
+            store
+                .search(query, 3_000)
+                .iter()
+                .map(|entry| entry.id)
+                .collect()
+        };
+        assert_eq!(ids("same words"), [same]);
+        assert_eq!(ids("RAW rewritten"), [rewritten]);
+        assert_eq!(ids("no such phrase"), Vec::<u64>::new());
     }
 
     #[test]
@@ -996,6 +1144,50 @@ mod tests {
             read_snapshot(&path).unwrap().is_empty(),
             "a clear stays cleared"
         );
+    }
+
+    #[test]
+    fn the_revision_moves_only_when_a_search_could_change() {
+        let path = temp_path("revision");
+        let day_ms = HistoryRetention::Day.max_age_ms().unwrap();
+        let mut store = HistoryStore::open(path.clone(), HistoryRetention::Day, 0);
+        let moved = |store: &mut HistoryStore, now: u64, last: &mut u64| {
+            let revision = store.revision(now);
+            let changed = revision != *last;
+            *last = revision;
+            changed
+        };
+        let mut last = store.revision(0);
+        assert!(!moved(&mut store, 0, &mut last), "nothing changed");
+
+        let old = store.record(draft("old"), 1_000).unwrap().unwrap();
+        assert!(moved(&mut store, 1_000, &mut last), "a record");
+        store.record(draft("fresh"), 2_000).unwrap();
+        assert!(moved(&mut store, 2_000, &mut last));
+        assert!(!moved(&mut store, day_ms + 1_000, &mut last));
+
+        assert!(
+            moved(&mut store, day_ms + 1_001, &mut last),
+            "time expired the oldest"
+        );
+        assert!(store.entry(old).is_none());
+
+        let mut other = HistoryStore::open(path, HistoryRetention::Day, day_ms + 1_001);
+        other.record(draft("elsewhere"), day_ms + 1_002).unwrap();
+        store.sync();
+        assert!(
+            moved(&mut store, day_ms + 1_002, &mut last),
+            "another process"
+        );
+
+        store
+            .set_retention(HistoryRetention::Forever, day_ms + 1_002)
+            .unwrap();
+        assert!(moved(&mut store, day_ms + 1_002, &mut last), "retention");
+        let id = store.entries().next().unwrap().id;
+        store.delete(id).unwrap();
+        assert!(moved(&mut store, day_ms + 1_002, &mut last), "a delete");
+        assert!(!moved(&mut store, day_ms + 1_002, &mut last));
     }
 
     #[test]
@@ -1326,6 +1518,31 @@ mod tests {
     }
 
     #[test]
+    fn delete_many_removes_only_the_listed_entries() {
+        let path = temp_path("delete-many");
+        let mut store = HistoryStore::open(path.clone(), HistoryRetention::Week, 0);
+        let first = store.record(draft("one"), 1_000).unwrap().unwrap();
+        let second = store.record(draft("two"), 2_000).unwrap().unwrap();
+        let third = store.record(draft("three"), 3_000).unwrap().unwrap();
+
+        assert_eq!(
+            store.delete_many(&[first, third, 9_999]).unwrap(),
+            2,
+            "only the listed entries that exist count"
+        );
+        assert_eq!(store.len(), 1);
+        assert!(store.entry(first).is_none());
+        assert!(store.entry(second).is_some());
+        assert!(store.entry(third).is_none());
+        assert_eq!(store.delete_many(&[9_999]).unwrap(), 0);
+        assert_eq!(store.len(), 1);
+
+        let reopened = HistoryStore::open(path, HistoryRetention::Week, 4_000);
+        assert_eq!(reopened.len(), 1);
+        assert!(reopened.entry(second).is_some());
+    }
+
+    #[test]
     fn failed_clear_and_delete_keep_entries_for_a_retry() {
         let path = temp_path("failed-clear");
         let mut store = HistoryStore::open(path.clone(), HistoryRetention::Week, 0);
@@ -1335,8 +1552,17 @@ mod tests {
         fs::create_dir(&temporary).unwrap();
 
         assert!(store.delete(first).is_err());
+        assert!(store.delete_many(&[first]).is_err());
         assert!(store.clear().is_err());
         assert_eq!(store.len(), 2, "a failed save keeps the entries");
+        assert_eq!(
+            store
+                .entries()
+                .map(|entry| entry.final_text.as_str())
+                .collect::<Vec<_>>(),
+            ["two", "one"],
+            "a failed save puts every removed entry back in place"
+        );
 
         fs::remove_dir(temporary).unwrap();
         store.sync();

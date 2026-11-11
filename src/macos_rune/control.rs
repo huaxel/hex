@@ -169,6 +169,11 @@ impl Pump {
             ControlCommand::Dictation { .. } | ControlCommand::PasteLast => {
                 unreachable!("listener_command answers it")
             }
+            ControlCommand::TypedText => Some(ControlReply::error(
+                "unsupported",
+                "Transform typed text is Linux only",
+            )),
+            ControlCommand::Screenshot { pick } => screenshot(pick, reply),
             ControlCommand::MeetingRecord { title } => self.meeting(false, title, reply),
             ControlCommand::MeetingStop => self.meeting(true, None, reply),
             ControlCommand::MeetingCopyLast => Some(
@@ -596,6 +601,41 @@ fn listener_command(
 }
 
 /// Answers `reply` from a thread; a dropped reply reads as `control-unavailable`.
+/// `hex screenshot`: the display under the pointer, saved and copied as
+/// the shortcut's shots are, or with `pick` the picker.
+fn screenshot(pick: bool, reply: &SyncSender<ControlResponse>) -> Option<ControlReply> {
+    #[cfg(hex_capture)]
+    {
+        if !crate::labs::screenshots() {
+            return Some(ControlReply::error(
+                "disabled",
+                "Labs › Screenshots is off; turn it on with `hex settings set labs.screenshots on`",
+            ));
+        }
+        if pick {
+            return Some(if crate::screenshots::begin() {
+                ControlReply::done("Opened the screenshot picker")
+            } else {
+                ControlReply::unchanged("The screenshot picker is already open")
+            });
+        }
+        background(reply, || {
+            crate::screenshots::shoot_display()
+                .map(|path| ControlReply::done(path.display().to_string()))
+                .map_err(|error| ControlError::new("failed", format!("{error:#}")))
+        });
+        None
+    }
+    #[cfg(not(hex_capture))]
+    {
+        let _ = (pick, reply);
+        Some(ControlReply::error(
+            "unsupported",
+            "this build has no screenshots",
+        ))
+    }
+}
+
 fn background(
     reply: &SyncSender<ControlResponse>,
     work: impl FnOnce() -> Result<ControlReply, ControlError> + Send + 'static,
@@ -749,7 +789,7 @@ fn wait_for_model(
 ) -> Result<ControlReply, ControlError> {
     let name = crate::transcription::models::definition(selection.model).name;
     let matches = |settings: &AppSettings| {
-        super::same_model_and_language(&settings.transcription, &selection)
+        super::runtime::same_model_and_language(&settings.transcription, &selection)
     };
     if load().is_ok_and(|settings| matches(&settings)) {
         return Ok(ControlReply::unchanged(format!(
@@ -945,16 +985,21 @@ mod tests {
                 Ok(())
             },
         ));
-        let mut runtime = super::super::Runtime {
+        let mut runtime = super::super::runtime::Runtime {
             settings: Default::default(),
             keyboard_switcher: crate::transcription::keyboard_model_switching::Switcher::new(
                 Default::default(),
                 None,
             ),
+            app_switcher: crate::transcription::app_model_switching::Switcher::new(false, None),
             automatic_preparation: false,
             preparation,
             recognition_start: None,
             listener_failure: Default::default(),
+            event_reader: crate::desktop::events::EventReader::open(""),
+            activity: Default::default(),
+            last_completed_at: None,
+            started_at: 0,
         };
         let selection = TranscriptionSelection {
             model: TranscriptionModelId::WhisperLargeV3Turbo,

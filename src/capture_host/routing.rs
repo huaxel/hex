@@ -25,12 +25,25 @@ use scrawl_capture::{Router, RouterConfig, RouterDirs, RuleKind, Undone};
 
 use super::{SharedOutcomes, lock};
 
+mod opencode;
 mod preparation;
+mod session_name;
+
+#[cfg(test)]
+use session_name::session_name_by;
+use session_name::{name_answer, session_name};
 
 /// How often sends OpenCode didn't take are retried.
 const RETRY_EVERY: Duration = Duration::from_secs(15);
 /// How long taking back a send may wait on OpenCode.
 const UNDO_DEADLINE: Duration = Duration::from_secs(10);
+/// How long a rule's send waits for Undo before it goes.
+const SEND_HOLD: Duration = Duration::from_secs(3);
+/// A held send resumes with at least this long left, so it never goes the
+/// instant the pointer leaves the capsule.
+const RESUME_LEFT: Duration = Duration::from_secs(1);
+/// A hold the capsule never ends (it closed under the pointer) lapses.
+const HOLD_MAX: Duration = Duration::from_secs(120);
 const QUEUE: usize = 16;
 
 // ---------------------------------------------------------------------------
@@ -76,9 +89,12 @@ pub struct RouteDest {
     pub name: String,
     /// A quiet word on why: `rule`, `dev server`, `guess`, `2 min ago`.
     pub why: String,
+    /// The session's folder, which the capsule's search also matches.
+    pub directory: Option<PathBuf>,
 }
 
-/// `recent` is every other session the look read, newest first.
+/// `recent` is every other session the look read, newest first as first
+/// listed; a later answer keeps listed rows in place and adds new ones last.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RouteAnswer {
     /// Written; the router is still working.
@@ -160,7 +176,7 @@ pub fn router() -> Router {
         Some(support.join("routing-decisions.jsonl")),
         Some(settings.captures_dir()),
     );
-    Router::new(config, dirs)
+    let router = Router::new(config, dirs)
         .with_log(|line| {
             if line.starts_with("deliver:") || line.starts_with("routing time:") {
                 tracing::info!(line, "capture router");
@@ -168,7 +184,10 @@ pub fn router() -> Router {
                 tracing::debug!(line, "capture router");
             }
         })
-        .with_summary(scrawl_capture::sketch::summary_markdown)
+        .with_summary(scrawl_capture::sketch::summary_markdown);
+    #[cfg(target_os = "windows")]
+    let router = router.with_opencode(std::sync::Arc::new(opencode::Wsl));
+    router
 }
 
 fn sends(config: &RouterConfig) -> bool {
@@ -179,6 +198,32 @@ fn sends(config: &RouterConfig) -> bool {
 /// sending captures to OpenCode sessions (`DisableOpenCodeProcessing`).
 fn opencode_managed() -> bool {
     crate::policy::Policy::current().locks(crate::policy::Lock::OpenCodeProcessing)
+}
+
+/// Open OpenCode sessions, newest first, as Send to… lists them, read
+/// within `budget`. Blocks; call it off the UI thread.
+#[cfg(target_os = "macos")]
+pub fn recent_sessions(budget: Duration) -> anyhow::Result<Vec<RouteDest>> {
+    anyhow::ensure!(!opencode_managed(), "OpenCode is turned off here");
+    let read = router().run(|| {
+        let mut get = routing::within(scrawl_capture::opencode::api_get_within, budget);
+        look::read_candidates(&mut get, &[], &[], 1)
+    });
+    if read.candidates.is_empty()
+        && let Some(error) = read.error
+    {
+        return Err(error);
+    }
+    Ok(recent(&read.candidates, &[], now_ms()))
+}
+
+/// Sends the PNG at `png` with `text` into `session`, as the router sends
+/// captures. Blocks; call it off the UI thread.
+#[cfg(target_os = "macos")]
+pub fn send_image(session: &str, text: &str, png: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(!opencode_managed(), "OpenCode is turned off here");
+    router().run(|| scrawl_capture::opencode::send_image_to_session(session, text, png))?;
+    Ok(())
 }
 
 /// The tab, terminal, and sessions behind a capture that just stopped,
@@ -259,6 +304,9 @@ pub(super) enum Job {
         always: bool,
     },
     Undo,
+    /// The pointer is on the capsule (`true`) or left it: a rule's send
+    /// waiting out its Undo window pauses there and resumes after.
+    Hold(bool),
     /// `hex capture send`: any capture, to `to` or where its route or its
     /// last send says.
     #[cfg_attr(target_os = "windows", allow(dead_code))]
@@ -379,7 +427,29 @@ struct Routed {
     saved: Option<SavedRule>,
     /// The rule's cancellation window starts at publication, even before folder resolution.
     due: Option<Instant>,
+    /// Since when the capsule holds `due` (the pointer is on it).
+    held: Option<Instant>,
     destination: Option<Destination>,
+}
+
+impl Routed {
+    /// Ends a hold: `due` moves on by the time held, keeping what was left
+    /// (at least [`RESUME_LEFT`], never more than the whole [`SEND_HOLD`]).
+    fn resume(&mut self, now: Instant) {
+        let Some(since) = self.held.take() else {
+            return;
+        };
+        if let Some(due) = &mut self.due {
+            let left = due.saturating_duration_since(since);
+            *due = now + left.clamp(RESUME_LEFT, SEND_HOLD);
+        }
+    }
+
+    /// Whether the capsule still holds its send.
+    fn holding(&self, now: Instant) -> bool {
+        self.held
+            .is_some_and(|since| now.saturating_duration_since(since) < HOLD_MAX)
+    }
 }
 
 /// A rule saved with a send, and what its key held before.
@@ -448,6 +518,7 @@ impl Worker {
             Job::Written { bundle, look } => self.written(bundle, look),
             Job::Send { to, always } => self.chosen(&to, always),
             Job::Undo => self.undo(),
+            Job::Hold(on) => self.hold(on),
             Job::SendBundle {
                 bundle,
                 to,
@@ -503,8 +574,8 @@ impl Worker {
         }
         let dest = match to {
             Some(to) if to.starts_with("ses") => Destination {
+                title: session_name(to, to, &[]),
                 session: to.to_owned(),
-                title: to.to_owned(),
                 via: "chosen".into(),
                 url: None,
                 directory: None,
@@ -626,6 +697,7 @@ impl Worker {
             offered: None,
             saved: None,
             due: None,
+            held: None,
             destination: None,
         });
         self.publish();
@@ -676,6 +748,18 @@ impl Worker {
         self.take_back();
         self.correct(jev::Action::Redirect, "reroute", Some(&dest));
         self.send_current(dest, Some("chosen"));
+    }
+
+    fn hold(&mut self, on: bool) {
+        let Some(current) = &mut self.current else {
+            return;
+        };
+        let now = Instant::now();
+        if on {
+            current.held.get_or_insert(now);
+        } else {
+            current.resume(now);
+        }
     }
 
     fn undo(&mut self) {
@@ -774,6 +858,9 @@ impl Worker {
         let started = Instant::now();
         if let Some(via) = via {
             via.clone_into(&mut dest.via);
+        }
+        if let Some(current) = self.current.as_ref() {
+            dest.title = session_name(&dest.session, &dest.title, &current.candidates);
         }
         self.set_delivery(RouteDelivery::Sending {
             to: dest.title.clone(),
@@ -887,7 +974,9 @@ impl Worker {
         });
         let (session, title) = match found {
             Some(dest) => (dest.session.clone(), dest.name.clone()),
-            None if to.starts_with("ses") => (to.to_owned(), to.to_owned()),
+            None if to.starts_with("ses") => {
+                (to.to_owned(), session_name(to, to, &current.candidates))
+            }
             None => {
                 tracing::info!("the capsule named a session the route doesn't list");
                 return None;
@@ -1037,9 +1126,8 @@ const AUTH_REFUSED: &str = "OpenCode needs a password Hex doesn't have";
 /// password itself.
 const AUTH_HINT: &str = "OpenCode refused Hex's password. Hex reads it from OpenCode's \
                          service.json under this user's ~/.local/state/opencode (or \
-                         OPENCODE_PASSWORD); an OpenCode running in WSL keeps its registration \
-                         inside WSL, which Hex on Windows can't read. The capture is saved and \
-                         copied either way";
+                         OPENCODE_PASSWORD); on Windows, turn on Labs › OpenCode in WSL \
+                         when OpenCode runs there. The capture is saved and copied either way";
 
 /// Whether a failed request (`{err:#}`) was OpenCode refusing the
 /// credentials.
@@ -1145,6 +1233,7 @@ fn answer_for(
             session: dest.session,
             name: dest.title,
             why: why(&dest.via).to_owned(),
+            directory: scored.candidate.directory.clone(),
         }
     };
     let recent = |shown: &[&str]| recent(candidates, shown, now_ms);
@@ -1161,10 +1250,11 @@ fn answer_for(
             shown: Some(Shown::guess(why)),
         }
     };
-    match decided {
-        // Only a rule the person saved sends on its own; anything else the
-        // router would send is its first suggestion.
-        Decided::Judged(smart::Decision::Send { to, instead }) if policy::saved_rule(&to) => {
+    let mut answered = match decided {
+        // Only a rule the person saved, or a page naming its session, sends
+        // on its own; anything else the router would send is its first
+        // suggestion.
+        Decided::Judged(smart::Decision::Send { to, instead }) if policy::explicit(&to) => {
             let dest = smart::destination_of(&to, url);
             let shown = Shown::rule(lead_why(&to));
             let to = scored(&to);
@@ -1200,7 +1290,12 @@ fn answer_for(
         Decided::Failed => Answered::of(RouteAnswer::NoAnswer {
             recent: recent(&[]),
         }),
-    }
+    };
+    // The early local read, a saved rule, or a list read without a title can
+    // leave a `ses…` id where a name goes; the capsule and the bundle say the
+    // title instead.
+    name_answer(&mut answered.answer, answered.send.as_mut(), candidates);
+    answered
 }
 
 /// What [`answer_for`] made of a decision.
@@ -1248,6 +1343,7 @@ fn recent(candidates: &[smart::Candidate], shown: &[&str], now_ms: u64) -> Vec<R
                 "{} ago",
                 smart::ago_text(now_ms.saturating_sub(candidate.updated_ms))
             ),
+            directory: candidate.directory.clone(),
         })
         .collect()
 }
@@ -1257,6 +1353,7 @@ fn recent(candidates: &[smart::Candidate], shown: &[&str], now_ms: u64) -> Vec<R
 fn why(via: &str) -> &str {
     match via {
         "rule" | "app-rule" => "rule",
+        "signed" => "page names it",
         "named" | "speech" => "mentioned",
         "sdk" | "page" => "same page",
         "viewed" => "you were just in it",
@@ -1349,6 +1446,13 @@ fn deliver(
         );
     }
     router.run(|| {
+        // The bundle and its summary name the session too, so they say its
+        // title rather than a `ses…` id when one reached this far.
+        let titled = Destination {
+            title: session_name(&dest.session, &dest.title, &[]),
+            ..dest.clone()
+        };
+        let dest = &titled;
         let recorded = scrawl_capture::handoff::load_bundle(bundle).and_then(
             |(_, mut loaded): (PathBuf, ScrawlBundle)| {
                 routing::record_destination(bundle, &mut loaded, dest.clone())
@@ -1518,8 +1622,95 @@ mod tests {
         )
     }
 
+    /// Kit's Nov 4 capture: a saved app rule named a session by id before the
+    /// session server answered, and the pill said `Sent to ses_…`. A name is
+    /// a title, or the word "session".
     #[test]
-    fn only_a_saved_rule_sends_on_its_own() {
+    fn a_session_is_named_by_its_title_never_its_id() {
+        let candidates = [candidate("ses_seer", "SEER", 0)];
+        let no_lookup = |_: &str| panic!("a title needs no lookup");
+        assert_eq!(
+            session_name_by("ses_seer", "SEER", &candidates, no_lookup),
+            "SEER"
+        );
+        // A rule that named only the id: the capture's list has the title.
+        assert_eq!(
+            session_name_by("ses_seer", "ses_seer", &candidates, |_| None),
+            "SEER"
+        );
+        // Not in the list: OpenCode's title.
+        assert_eq!(
+            session_name_by("ses_x", "ses_x", &candidates, |_| Some("HOME".into())),
+            "HOME"
+        );
+        // Nowhere at all: "session", never the id.
+        assert_eq!(
+            session_name_by("ses_x", "ses_x", &candidates, |_| None),
+            "session"
+        );
+        assert_eq!(
+            session_name_by("ses_x", "ses_x", &candidates, |_| Some(String::new())),
+            "session"
+        );
+        assert_eq!(session_name("ses_x", "", &candidates), "session");
+        assert_eq!(
+            session_name_by("ses_seer", "SEER", &candidates, |_| Some("HOME".into())),
+            "SEER",
+            "a title already read is kept"
+        );
+    }
+
+    /// The answer and its send carry a name even when the router handed over
+    /// only a session id.
+    #[test]
+    fn a_rule_answer_and_send_are_named_by_title() {
+        let rule = |title: &str| {
+            answer_for(
+                Decided::Judged(smart::Decision::Send {
+                    to: scored_by(
+                        "ses_seer",
+                        title,
+                        smart::Basis::Clue(smart::Source::AppRule),
+                        "routing.apps sends com.kitlangton.seer to ses_seer",
+                    ),
+                    instead: Vec::new(),
+                }),
+                None,
+                None,
+                &[candidate("ses_seer", "SEER", 0)],
+                0,
+            )
+        };
+        for answered in [rule(""), rule("ses_seer")] {
+            let RouteAnswer::Rule { to, .. } = &answered.answer else {
+                panic!("not a rule: {:?}", answered.answer);
+            };
+            assert_eq!(to.name, "SEER", "the pill's name");
+            assert_eq!(
+                answered.send.map(|dest| dest.title),
+                Some("SEER".into()),
+                "the bundle and summary's name"
+            );
+        }
+        // Nothing read and no server: words, never the id.
+        let answered = answer_for(
+            Decided::Judged(smart::Decision::Send {
+                to: scored("ses_seer", ""),
+                instead: Vec::new(),
+            }),
+            None,
+            None,
+            &[],
+            0,
+        );
+        let RouteAnswer::Guess { suggested, .. } = &answered.answer else {
+            panic!("not a guess: {:?}", answered.answer);
+        };
+        assert_eq!(suggested[0].name, "session");
+    }
+
+    #[test]
+    fn only_a_saved_rule_or_a_signed_page_sends_on_its_own() {
         use smart::{Basis, Source};
         for (basis, why, shown) in [
             (Basis::JevHome, "Jev couldn't tell, so HOME", ""),
@@ -1568,6 +1759,10 @@ mod tests {
                 Basis::Clue(Source::AppRule),
                 "routing.apps sends com.example.app to /p/a",
             ),
+            (
+                Basis::Clue(Source::Signed),
+                "/srv/artifacts/demo/index.html names it in a meta tag",
+            ),
         ] {
             let answered = sent_by(basis, why);
             assert_eq!(
@@ -1575,9 +1770,12 @@ mod tests {
                 Some("ses_a".into()),
                 "{why}: sent at once"
             );
-            assert!(
-                matches!(answered.answer, RouteAnswer::Rule { ref to, .. } if to.why == "rule")
-            );
+            let chip = if basis == Basis::Clue(Source::Signed) {
+                "page names it"
+            } else {
+                "rule"
+            };
+            assert!(matches!(answered.answer, RouteAnswer::Rule { ref to, .. } if to.why == chip));
             assert_eq!(answered.shown, Some(Shown::rule(why)));
         }
     }
@@ -1623,6 +1821,7 @@ mod tests {
                 session: "ses_b".into(),
                 name: "Beta".into(),
                 why: "1 min ago".into(),
+                directory: Some("/tmp/ses_b".into()),
             }]
         );
     }
@@ -1654,13 +1853,13 @@ mod tests {
     /// sheet yet, and the capsule said only "couldn't reach SEER".
     #[test]
     fn a_failed_send_says_what_went_wrong() {
-        let unread = "OpenCode said: Unable to read attachment: file:///Users/kit/Library/\
+        let unread = "OpenCode said: Unable to read attachment: file:///Users/alex/Library/\
                       Application%20Support/scrawl/captures/1.scrawl/contact-sheet.png: \
                       OpenCode API failed: HTTP 400 Bad Request";
         assert_eq!(send_why(unread, false), FILES_UNSEEN);
         assert_eq!(
             send_why(unread, true),
-            "Unable to read attachment: file:///Users/kit/Library/Applica…"
+            "Unable to read attachment: file:///Users/alex/Library/Applic…"
         );
         let cases = [
             (
@@ -2014,6 +2213,134 @@ mod tests {
             }
         }
 
+        /// A site rule for a gallery's whole host once sent pages a session
+        /// had signed elsewhere. The page's own session wins.
+        #[test]
+        fn a_signed_page_sends_ahead_of_a_rule_for_its_host() {
+            let router = router_with(|c| {
+                c.sites
+                    .insert("https://gallery.example".into(), "ses_ruled".into());
+            });
+            let url = "https://gallery.example/2026-01-02-demo/";
+            let live = look::Live {
+                url: Some(url.into()),
+                clues: vec![smart::Clue::new(
+                    smart::Source::Signed,
+                    smart::Pointer::Session {
+                        id: "ses_signer".into(),
+                        directory: None,
+                    },
+                    "index.html names it in a meta tag",
+                )],
+                ..look::Live::default()
+            };
+            let (look, found) = held_look(router, live);
+            let outcomes = SharedOutcomes::default();
+            let mut worker = worker(outcomes.clone());
+            let bundle = written("com.example.browser");
+            lock(&outcomes).fail(bundle.clone(), "test".into());
+            worker.written(bundle, look);
+            let current = worker.current.as_ref().unwrap();
+            assert_eq!(
+                current.destination.as_ref().map(|d| d.session.as_str()),
+                Some("ses_signer")
+            );
+            assert!(
+                matches!(&current.route.answer, RouteAnswer::Rule { to, .. }
+                    if to.session == "ses_signer" && to.why == "page names it"),
+                "{:?}",
+                current.route.answer
+            );
+            drop(found);
+        }
+
+        /// A saved app rule to a session id sends before the session server
+        /// answers: the pill, the delivery and the bundle still say a name,
+        /// never `ses_…`.
+        #[test]
+        fn a_rule_sent_before_the_sessions_read_names_a_session_not_its_id() {
+            let router = router_with(|c| {
+                c.apps
+                    .insert("com.example.board".into(), "ses_board".into());
+            });
+            let (look, found) = held_look(router, look::Live::default());
+            let outcomes = SharedOutcomes::default();
+            let mut worker = worker(outcomes.clone());
+            let bundle = written("com.example.board");
+            lock(&outcomes).fail(bundle.clone(), "test".into());
+            worker.written(bundle.clone(), look);
+            // The local read saw nothing, so the rule's send is due at once.
+            worker.current.as_mut().unwrap().due = Some(Instant::now());
+            worker.prepared();
+            let current = worker.current.as_ref().unwrap();
+            assert!(
+                matches!(&current.route.answer, RouteAnswer::Rule { to, .. }
+                    if to.session == "ses_board" && to.name == "session"),
+                "{:?}",
+                current.route.answer
+            );
+            assert_eq!(
+                current.route.delivery,
+                Some(RouteDelivery::Sent {
+                    to: "session".into()
+                }),
+                "the pill's name"
+            );
+            let (_, loaded) = scrawl_capture::handoff::load_bundle(&bundle).unwrap();
+            assert_eq!(
+                loaded.destination.map(|dest| dest.title),
+                Some("session".into()),
+                "the bundle and summary's name"
+            );
+            drop(found);
+            worker.pending = None;
+            std::fs::remove_dir_all(bundle.parent().unwrap()).ok();
+        }
+
+        #[test]
+        fn the_capsule_holds_a_rules_send_while_the_pointer_is_on_it() {
+            static POSTS: AtomicU64 = AtomicU64::new(0);
+            fn post(path: &Path, id: &str) -> anyhow::Result<scrawl_capture::handoff::Posted> {
+                POSTS.fetch_add(1, Ordering::Relaxed);
+                posted(path, id)
+            }
+            let router = router_with(|c| {
+                c.apps
+                    .insert("com.example.board".into(), "ses_board".into());
+            });
+            let (look, found) = held_look(router, look::Live::default());
+            let outcomes = SharedOutcomes::default();
+            let mut worker = worker(outcomes.clone());
+            worker.forward = post;
+            let bundle = written("com.example.board");
+            lock(&outcomes).fail(bundle.clone(), "test".into());
+            worker.written(bundle.clone(), look);
+            worker.hold(true);
+            // Its window ran out while the pointer was on the capsule.
+            worker.current.as_mut().unwrap().due = Some(Instant::now());
+            worker.prepared();
+            assert_eq!(POSTS.load(Ordering::Relaxed), 0, "held, it waits");
+            // Held 10 s with 2 s left: it goes 2 s after the pointer leaves.
+            let current = worker.current.as_mut().unwrap();
+            let since = Instant::now() - Duration::from_secs(10);
+            current.held = Some(since);
+            current.due = Some(since + Duration::from_secs(2));
+            worker.hold(false);
+            let current = worker.current.as_ref().unwrap();
+            assert!(current.held.is_none());
+            let left = current
+                .due
+                .unwrap()
+                .saturating_duration_since(Instant::now());
+            assert!(left > Duration::from_millis(1900) && left <= Duration::from_secs(2));
+            worker.prepared();
+            assert_eq!(POSTS.load(Ordering::Relaxed), 0, "not before its time");
+            drop(found);
+            settle(&mut worker);
+            assert_eq!(POSTS.load(Ordering::Relaxed), 1);
+            std::fs::remove_dir_all(bundle.parent().unwrap()).unwrap();
+        }
+
         #[test]
         fn a_new_capture_does_not_cancel_an_older_folder_rules_send() {
             static POSTS: AtomicU64 = AtomicU64::new(0);
@@ -2054,6 +2381,83 @@ mod tests {
             assert!(worker.current.as_ref().unwrap().sent.is_none());
             std::fs::remove_dir_all(first.parent().unwrap()).unwrap();
             std::fs::remove_dir_all(second.parent().unwrap()).unwrap();
+        }
+
+        /// Kit's Nov 5 report: the list appeared, then a later judgement put
+        /// its pick on top and re-sorted the recent sessions, so a click
+        /// landed on another session. Rows already listed stay where they
+        /// are; a session new to the list comes last.
+        #[test]
+        fn a_later_judgement_never_moves_a_listed_row() {
+            let (look, found) = held_look(router_with(|_| {}), look::Live::default());
+            let outcomes = SharedOutcomes::default();
+            let mut worker = worker(outcomes.clone());
+            let bundle = written("com.example.board");
+            lock(&outcomes).fail(bundle.clone(), "test".into());
+            worker.written(bundle.clone(), look);
+            let (updates, pending) = preparation::fed();
+            worker.pending = Some(pending);
+            drop(found);
+            let rows = |worker: &Worker| -> Vec<String> {
+                listed(&worker.current.as_ref().unwrap().route.answer)
+                    .iter()
+                    .map(|dest| dest.session.clone())
+                    .collect()
+            };
+            let live = |candidates| look::Live {
+                candidates,
+                ..Default::default()
+            };
+            updates
+                .send(preparation::Update::judged(
+                    live(vec![
+                        candidate("ses_board", "BOARD", 30),
+                        candidate("ses_home", "HOME", 20),
+                        candidate("ses_hex", "HEX", 10),
+                    ]),
+                    smart::Judgement {
+                        decision: smart::Decision::Keep {
+                            reason: String::new(),
+                        },
+                        ranking: Vec::new(),
+                    },
+                ))
+                .unwrap();
+            worker.prepared();
+            assert_eq!(rows(&worker), ["ses_board", "ses_home", "ses_hex"]);
+            // The model picks the last row; meanwhile HEX moved and a new
+            // session opened.
+            let pick = scored_by(
+                "ses_hex",
+                "HEX",
+                smart::Basis::Clue(smart::Source::Named),
+                "mentioned",
+            );
+            updates
+                .send(preparation::Update::judged(
+                    live(vec![
+                        candidate("ses_hex", "HEX", 40),
+                        candidate("ses_board", "BOARD", 30),
+                        candidate("ses_home", "HOME", 20),
+                        candidate("ses_new", "NEW", 50),
+                    ]),
+                    smart::Judgement {
+                        decision: smart::Decision::Offer {
+                            choices: vec![pick],
+                        },
+                        ranking: Vec::new(),
+                    },
+                ))
+                .unwrap();
+            worker.prepared();
+            assert_eq!(
+                rows(&worker),
+                ["ses_board", "ses_home", "ses_hex", "ses_new"]
+            );
+            let answer = &worker.current.as_ref().unwrap().route.answer;
+            assert!(matches!(answer, RouteAnswer::Guess { .. }), "{answer:?}");
+            worker.pending = None;
+            std::fs::remove_dir_all(bundle.parent().unwrap()).ok();
         }
 
         #[test]

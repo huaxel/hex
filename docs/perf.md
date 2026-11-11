@@ -1,6 +1,6 @@
 # Performance benchmarks
 
-Hex is benchmarked with [strobe](https://github.com/Hona/strobe) as a native
+Hex is benchmarked with [strobe](https://github.com/anomalyco/strobe) as a native
 app. strobe builds two variants (for example `origin/dev` and your checkout),
 launches each in a fresh private home, and compares them in alternating runs.
 
@@ -9,10 +9,31 @@ strobe bench perf/idle.bench.ts --base origin/dev --head .
 strobe bench perf/launch.bench.ts --base origin/dev --head .
 strobe bench perf/idle.bench.ts --check   # one short, untimed pass
 strobe bench perf/idle.bench.ts --filter "window-closed*" --base origin/dev --head .
-strobe report experiment <exp_…> --format pr   # tables for the PR body, on stdout
+strobe report experiment <exp_…> --format pr --update-pr <n>   # the results block in PR n
 ```
 
-`--filter` takes case names, comma lists, and globs.
+`--filter` and `--target` take names, comma lists, and globs.
+
+## In a pull request
+
+Write the PR's own text yourself: what strobe showed that led to the change
+(the command and recording id), and what the change does. Then let strobe
+place its evidence:
+
+```sh
+strobe report experiment <exp_…> --format pr --update-pr <n>
+```
+
+It adds one generated block to PR `n`'s body, or replaces that experiment's
+block after a rerun, and leaves the rest of the body alone. Don't edit inside
+the block (strobe refuses to update a hand-edited one); put your reading of
+the numbers above or below it. Without `--update-pr`, the block goes to
+stdout for pasting.
+
+Window cases name the screen they measure with `expect` (the window title
+and the pane's heading). A block on another screen, such as a first-run
+dialog over the pane, is refused `WrongScreen` instead of timed, and the
+block's `On screen:` line says what showed.
 
 Run timed benches on a quiet machine. Close other apps and keep the session
 unlocked.
@@ -32,6 +53,14 @@ unlocked.
   so a machine whose default Rust toolchain is GNU still builds with MSVC
   (GNU fails with "dlltool not found"). Windows builds also need the Vulkan
   SDK (`docs/windows.md`).
+- Each variant keeps the GPU driver's compiled shaders across its own
+  launches (strobe's default, `gpuCache: "warm"`), as a machine that ran Hex
+  before has them. Base and head never share them, and discarded warm-up
+  launches fill them before the timed pairs. Without them, every launch
+  compiled Hex's shaders again: a dictation spent 4.6 to 5.3 s of each 6 s
+  run in the driver's compiler. So `cold-launch` is a returning user's launch
+  (Hex not running, shaders cached). A first launch after an install or a
+  driver update would need a target with `gpuCache: "cold"`.
 
 ## Isolation
 
@@ -71,7 +100,10 @@ own Hex:
   the private home (`HEX_APPLICATION_SUPPORT_DIR`), not in your
   `~/Library/Application Support/hex`, so your own Hex there does not stop
   the bench. strobe brings the copy's window to the front only after a
-  minute without keyboard or mouse input.
+  minute without keyboard or mouse input. Every profile records the
+  `anomaly-hex-identity` migration: without it, a copy whose setup isn't
+  ready (the copy has no Microphone grant) reopens the first-run tour over
+  the window, and every click lands on the tour.
 
 The copy loads no model, except in the listening and dictation cases below.
 
@@ -115,7 +147,20 @@ keyboard hook and loads the default English model, which
 `perf/seeds/listening.ts` copies from this machine's own Hex install into
 `perf/seeds/.generated`. strobe shares a seed file this large (64 MB and up)
 read only between launches instead of copying it into each private home. The warm profile opens the machine's real microphone; neither records.
-Leave the dictation shortcut alone while it runs.
+
+Setup waits until the copy's event log shows `session_started`, which
+Windows and Linux write once the model has loaded and warmed, then 2 s
+more, and at least 10 s in all. A new build's first launch compiles the GPU
+driver's shaders during that load: about 5 s of CPU on an idle machine, and
+over 10 s on a busy one. A fixed 10 s wait let that compile run into the
+measured runs, which then read 1 to 2.5 s of `cpu.work` instead of about
+10 ms.
+
+As in the dictation cases, the profiles move the copy's shortcuts to F19
+and F18 and unbind Paste Last, so a key pressed while a bench runs on a
+machine in use starts nothing. The copy's keyboard and mouse hooks still
+see every key and mouse move, so input on the bench machine adds
+`cpu.work` and `cpu.wakes`: compare runs from an idle machine.
 
 ## Dictation cases
 

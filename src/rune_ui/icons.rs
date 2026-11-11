@@ -32,6 +32,14 @@ line_icon!(
     ]
 );
 line_icon!(
+    CAMERA,
+    "hex-row-camera",
+    [
+        "M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z",
+        "M15 13a3 3 0 1 1-6 0 3 3 0 0 1 6 0z",
+    ]
+);
+line_icon!(
     BLUETOOTH,
     "hex-row-bluetooth",
     ["m7 7 10 10-5 5V2l5 5L7 17"]
@@ -248,6 +256,14 @@ line_icon!(
     ]
 );
 line_icon!(
+    CALL,
+    "hex-row-call",
+    [
+        "m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5",
+        "M4 6h10a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z",
+    ]
+);
+line_icon!(
     CIRCLE_X,
     "hex-row-circle-x",
     [
@@ -255,4 +271,24 @@ line_icon!(
         "m15 9-6 6",
         "m9 9 6 6"
     ]
+);
+line_icon!(
+    PEN,
+    "hex-row-pen",
+    [
+        "M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4.5 1.5L5 15z",
+        "m13.5 6.5 3 3",
+    ]
+);
+line_icon!(
+    ARROW_TOOL,
+    "hex-row-arrow-tool",
+    ["M5 19 19 5", "M10 5h9v9"]
+);
+line_icon!(BOX_TOOL, "hex-row-box", ["M4 5h16v14H4z"]);
+line_icon!(TEXT_TOOL, "hex-row-text-tool", ["M5 5h14", "M12 5v15"]);
+line_icon!(
+    CROP_TOOL,
+    "hex-row-crop",
+    ["M7 2.5V17h14.5", "M2.5 7H17v14.5"]
 );

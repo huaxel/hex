@@ -142,6 +142,7 @@ impl Backend {
                 transcription: published.transcription.clone(),
                 update_status: published.update_status.clone(),
                 update_notes: published.update_notes.clone(),
+                update_blocked: None,
                 editing: false,
             },
             settings: published.settings.clone(),
@@ -175,7 +176,12 @@ impl ChordWatch {
         let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
             // SAFETY: AppKit passes a live event for the handler's duration.
             let event_ref = unsafe { event.as_ref() };
-            let flags = event_ref.modifierFlags().bits() as u64;
+            // NSEvent's flags carry the same device-dependent side bits, and
+            // macOS's filter can rewrite a remapped Caps Lock there too.
+            let flags = crate::app_settings::normalized_modifier_flags(
+                event_ref.modifierFlags().bits() as u64,
+                crate::suppression::physical_keys::snapshot(),
+            );
             let chord = match event_ref.r#type() {
                 NSEventType::KeyDown => {
                     let characters = event_ref
@@ -245,7 +251,6 @@ impl Drop for ChordWatch {
 /// modifiers, or the most modifier keys held at once when they are all
 /// released without a key, with the sides `recorded_sides` keeps (or,
 /// with Labs › Sided modifier chords on, the side each was pressed on).
-#[derive(Default)]
 struct ChordCapture {
     peak: HotkeyModifiers,
     /// A key went down with these modifiers; their release records nothing.
@@ -253,12 +258,27 @@ struct ChordCapture {
     /// A modifier-only chord keeps every modifier's side, such as
     /// Right ⌘ + Right ⌥, instead of widening each to either side.
     sided: bool,
+    /// Names a key from the active layout when AppKit's characters are empty,
+    /// as they are for a dead key (`^`, `´`, `` ` ``).
+    layout_label: fn(u16) -> Option<String>,
+}
+
+impl Default for ChordCapture {
+    fn default() -> Self {
+        Self {
+            peak: HotkeyModifiers::default(),
+            keyed: false,
+            sided: false,
+            layout_label: |_| None,
+        }
+    }
 }
 
 impl ChordCapture {
     fn with_sides(sided: bool) -> Self {
         Self {
             sided,
+            layout_label: crate::keyboard::key_label,
             ..Self::default()
         }
     }
@@ -294,11 +314,17 @@ impl ChordCapture {
         // Only modifiers held with the key are spent by it.
         self.keyed = !modifiers.is_empty();
         self.peak = HotkeyModifiers::default();
-        let key = match hotkey_key(code, characters) {
+        let key = match hotkey_key(code, characters, || (self.layout_label)(code)) {
             Ok(key) => key,
             Err(message) => return Some(Chord::Captured(Err(message))),
         };
-        if modifiers.is_empty() && !is_function_key(&key.label) && !is_navigation_key(code) {
+        // Function and navigation keys type nothing, so one may be a shortcut
+        // alone. The section key does type something, but the recorder takes it
+        // alone too: `settings::validate` refuses it while Labs › Section key
+        // alone is off, as Linux's recorder does.
+        let stands_alone =
+            is_function_key(&key.label) || is_navigation_key(code) || key.is_section();
+        if modifiers.is_empty() && !stands_alone {
             return Some(Chord::Captured(Err(tr("Add a modifier"))));
         }
         Some(Chord::Captured(Ok(HotkeyBinding {
@@ -350,8 +376,14 @@ fn is_navigation_key(code: u16) -> bool {
     matches!(code, 115 | 119 | 116 | 121 | 114)
 }
 
-/// The key a virtual key code records, and its label.
-fn hotkey_key(code: u16, characters: Option<&str>) -> Result<HotkeyKey, &'static str> {
+/// The key a virtual key code records, and its label. AppKit gives no
+/// characters for a dead key (`^`, `´`, `` ` ``), so `layout_label` names it
+/// from the active layout instead.
+fn hotkey_key(
+    code: u16,
+    characters: Option<&str>,
+    layout_label: impl FnOnce() -> Option<String>,
+) -> Result<HotkeyKey, &'static str> {
     let special = match code {
         49 => Some("Space"),
         48 => Some("Tab"),
@@ -395,13 +427,26 @@ fn hotkey_key(code: u16, characters: Option<&str>) -> Result<HotkeyKey, &'static
             label: label.into(),
         });
     }
-    let mut chars = characters.unwrap_or_default().chars();
-    match (chars.next(), chars.next()) {
-        (Some(character), None) if !character.is_control() => Ok(HotkeyKey {
+    let character = match single_key_character(characters) {
+        Some(character) => Some(character),
+        None => layout_label().and_then(|label| single_key_character(Some(label.as_str()))),
+    };
+    match character {
+        Some(character) => Ok(HotkeyKey {
             code,
             label: character.to_uppercase().collect(),
         }),
-        _ => Err(tr("Unsupported key")),
+        None => Err(tr("Unsupported key")),
+    }
+}
+
+/// The one visible character `text` holds, if it is exactly one non-control
+/// character.
+fn single_key_character(text: Option<&str>) -> Option<char> {
+    let mut characters = text.unwrap_or_default().chars();
+    match (characters.next(), characters.next()) {
+        (Some(character), None) if !character.is_control() => Some(character),
+        _ => None,
     }
 }
 
@@ -447,34 +492,48 @@ pub(super) fn hotkey_key_named(name: &str) -> Result<HotkeyKey, &'static str> {
             }),
     };
     if let Some(code) = code {
-        return hotkey_key(code, None);
+        return hotkey_key(code, None, || None);
     }
     let mut characters = name.chars();
     match (characters.next(), characters.next()) {
         (Some(character), None) => {
             let character = character.to_lowercase().next().unwrap_or(character);
-            let code =
-                crate::keyboard::key_code_for(character).map_err(|_| tr("Unsupported key"))?;
-            hotkey_key(code, Some(&character.to_string()))
+            // A dead key (`^`, `´`, `` ` ``) names itself on the active
+            // layout even though it types nothing until the next key.
+            let code = crate::keyboard::key_code_for(character)
+                .ok()
+                .or_else(|| crate::keyboard::key_code_for_base_label(character))
+                .ok_or(tr("Unsupported key"))?;
+            hotkey_key(code, Some(&character.to_string()), || None)
         }
         _ => Err(tr("Unsupported key")),
     }
 }
 
 /// macOS accepts every binding the capture can produce, except that Paste
-/// Last fires only on a key press (`suppression::paste_action`), and the
-/// capture shortcut, pressed once to start and again to finish, and the
+/// Last and the screenshot shortcut fire only on a key press
+/// (`suppression::paste_action`), and the capture shortcut, pressed once to start and again to finish, and the
 /// send-to list's need a key.
 pub(super) fn validate_hotkey(
     target: ShortcutTarget,
     binding: &HotkeyBinding,
 ) -> Result<(), &'static str> {
-    if matches!(target, ShortcutTarget::PasteLast | ShortcutTarget::Cancel) && binding.key.is_none()
+    if matches!(
+        target,
+        ShortcutTarget::PasteLast
+            | ShortcutTarget::Cancel
+            | ShortcutTarget::Screenshot
+            | ShortcutTarget::ScreenshotRecord
+    ) && binding.key.is_none()
     {
         return Err(tr("Add a key"));
     }
     #[cfg(hex_capture)]
-    if target == ShortcutTarget::Capture && binding.key.is_none() {
+    if matches!(
+        target,
+        ShortcutTarget::Capture | ShortcutTarget::CaptureReplay
+    ) && binding.key.is_none()
+    {
         return Err(tr("Add a key"));
     }
     Ok(())
@@ -638,6 +697,9 @@ impl MacHost {
             MeetingRequest::Stop => self
                 .runtime()?
                 .meeting(crate::meeting::MeetingRequest::Stop),
+            MeetingRequest::Import(path) => self
+                .runtime()?
+                .meeting(crate::meeting::MeetingRequest::Import(path)),
             MeetingRequest::Summarize(id) => self
                 .runtime()?
                 .meeting(crate::meeting::MeetingRequest::Summarize(id)),
@@ -647,16 +709,21 @@ impl MacHost {
             MeetingRequest::Trash(id) => {
                 crate::meeting::trash(&id).map_err(|error| format!("{error:#}"))
             }
-            MeetingRequest::Reveal(id) => {
-                let root = crate::meeting::root().map_err(|error| format!("{error:#}"))?;
-                open_path(&root.join(id));
+            MeetingRequest::Reveal(target) => {
+                // `open -R` selects the exported Markdown in Finder; a
+                // recording folder opens itself.
+                if target.is_markdown() {
+                    crate::meeting::reveal(target.path());
+                } else {
+                    crate::meeting::open_folder(target.path());
+                }
                 Ok(())
             }
             MeetingRequest::RevealFolder => {
                 let folder = crate::app_settings::meeting_output_folder();
                 match std::fs::create_dir_all(&folder) {
                     Ok(()) => {
-                        crate::meeting::reveal(&folder);
+                        crate::meeting::open_folder(&folder);
                         self.folder_error = None;
                     }
                     Err(error) => self.folder_error = Some(error.to_string()),
@@ -1234,14 +1301,14 @@ impl ScrawlHost {
     fn send(&mut self, request: super::platform::ScrawlRequest) {
         use super::platform::ScrawlRequest;
         match request {
-            // `send` moves the next refresh to now.
-            ScrawlRequest::Refresh => {}
+            // The pane opened or the window became key: read now.
+            ScrawlRequest::Refresh => crate::capture_host::invalidate_screen_access(),
             ScrawlRequest::QuitScrawl => crate::capture_host::quit_scrawl(),
             ScrawlRequest::RevealFolder => {
                 let folder = crate::app_settings::capture_settings().captures_dir();
                 match std::fs::create_dir_all(&folder) {
                     Ok(()) => {
-                        crate::meeting::reveal(&folder);
+                        crate::meeting::open_folder(&folder);
                         self.folder_error = None;
                     }
                     Err(error) => self.folder_error = Some(error.to_string()),
@@ -1286,7 +1353,16 @@ impl ScrawlHost {
         if !(refresh || changed) {
             return changed;
         }
-        let screen = crate::capture_host::screen_access();
+        // The row on screen follows the grant within seconds; without it an
+        // idle read stands, so no helper runs just because a window polls.
+        let screen = if state
+            .permissions_shown
+            .contains(&PermissionKind::ScreenRecording)
+        {
+            crate::capture_host::screen_access_watched()
+        } else {
+            crate::capture_host::screen_access()
+        };
         let screen_recording = screen == crate::capture_host::ScreenAccess::Allowed;
         let needs_restart = screen == crate::capture_host::ScreenAccess::NeedsRestart;
         changed |= update(&mut view.screen_needs_restart, needs_restart);
@@ -1378,19 +1454,10 @@ fn notes_availability() -> NotesAvailability {
     }
 }
 
-fn open_path(path: &std::path::Path) {
-    if let Err(error) = std::process::Command::new("/usr/bin/open")
-        .arg(path)
-        .spawn()
-    {
-        tracing::error!(%error, path = %path.display(), "could not open path");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_settings::ModifierSide;
+    use crate::app_settings::{ISO_SECTION_KEY_CODE, ModifierSide};
 
     #[test]
     fn paste_last_needs_a_key() {
@@ -1671,6 +1738,77 @@ mod tests {
             capture.key_down(ESCAPE_KEY_CODE, false, None, 0),
             Some(Chord::Cancelled)
         ));
+    }
+
+    /// The recorder names a dead key from the active layout when AppKit gives
+    /// no characters, and with neither it still refuses the key.
+    #[test]
+    fn a_dead_key_records_its_layout_label() {
+        let mut capture = ChordCapture {
+            layout_label: |code| (code == ISO_SECTION_KEY_CODE).then(|| "^".into()),
+            ..Default::default()
+        };
+        let binding =
+            captured(capture.key_down(ISO_SECTION_KEY_CODE, false, None, LEFT_OPTION)).unwrap();
+        assert_eq!(
+            binding.key,
+            Some(HotkeyKey {
+                code: ISO_SECTION_KEY_CODE,
+                label: "^".into()
+            })
+        );
+        assert!(
+            binding
+                .runtime()
+                .matches_key_press(ISO_SECTION_KEY_CODE, LEFT_OPTION)
+        );
+
+        let mut none = ChordCapture::default();
+        assert_eq!(
+            captured(none.key_down(ISO_SECTION_KEY_CODE, false, None, LEFT_OPTION)),
+            Err(tr("Unsupported key"))
+        );
+        assert_eq!(
+            hotkey_key(ISO_SECTION_KEY_CODE, None, || None),
+            Err(tr("Unsupported key"))
+        );
+        assert_eq!(
+            hotkey_key(ISO_SECTION_KEY_CODE, None, || Some("^".into()))
+                .unwrap()
+                .label,
+            "^"
+        );
+    }
+
+    /// The recorder takes the ISO section key alone, as Linux's does; Labs ›
+    /// Section key alone is enforced by `settings::validate` before saving,
+    /// not by the recorder.
+    #[test]
+    fn the_section_key_records_alone() {
+        let mut capture = ChordCapture {
+            layout_label: |_| Some("^".into()),
+            ..Default::default()
+        };
+        let binding = captured(capture.key_down(ISO_SECTION_KEY_CODE, false, None, 0)).unwrap();
+        assert!(binding.modifiers.is_empty());
+        assert_eq!(
+            binding.key,
+            Some(HotkeyKey {
+                code: ISO_SECTION_KEY_CODE,
+                label: "^".into()
+            })
+        );
+        assert!(binding.is_lone_section_key());
+        assert!(binding.runtime().matches_key_press(ISO_SECTION_KEY_CODE, 0));
+        // Another key alone still needs a modifier.
+        assert_eq!(
+            captured(capture.key_down(0, false, Some("a"), 0)),
+            Err(tr("Add a modifier"))
+        );
+        assert_eq!(single_key_character(Some("^")), Some('^'));
+        assert_eq!(single_key_character(Some("ab")), None);
+        assert_eq!(single_key_character(Some("\u{0}")), None);
+        assert_eq!(single_key_character(None), None);
     }
 
     fn calendar_answer(granted: bool, status: CalendarAccess) -> AccessAnswer {

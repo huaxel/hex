@@ -302,7 +302,7 @@ nonisolated struct KeyboardSnapshot: Codable, Equatable, Sendable {
 
 @MainActor
 struct KeyboardBridge {
-    static let appGroup = AppIdentity.appGroup
+    nonisolated static let appGroup = AppIdentity.appGroup
 
     private enum Key {
         static let command = "keyboard.command"
