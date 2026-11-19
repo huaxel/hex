@@ -4,8 +4,8 @@
 (`HEXKeyboard`), and Live Activity + Control Center widget extension
 (`HEXWidgets`). The containing app records a generation-scoped temporary WAV,
 transcribes on-device with Apple Speech (`SpeechTranscriber` on iOS 26+) or
-FluidAudio Parakeet V2 (iOS 18+), and removes each capture's file after
-inference, cancellation, or failure. During a warm session the keyboard
+FluidAudio Parakeet V2 (iOS 18+) or opt-in Parakeet v3 (25 languages), and
+removes each capture's file after inference, cancellation, or failure. During a warm session the keyboard
 extension sends commands and inserts completed text over the shared App Group
 (`group.anomaly.hex.mobile`). Otherwise it dictates by itself (in-keyboard
 dictation, iOS 26+): iOS refuses to record from a keyboard extension
@@ -69,6 +69,12 @@ it on-device with Apple Speech, downloading the speech assets on first use
     more than 10 pt first opens the style and **Return to** menu; releasing over a row picks it, and releasing elsewhere leaves
     the menu open for taps (`HexKeyGesture`). VoiceOver activation dictates,
     and the **Dictation styles** action opens the menu.
+  - **Local Parakeet v3 (Experiments, off by default):** Select the
+    multilingual Parakeet v3 model instead of automatic engine selection. Hex
+    prepares the model on this iPhone and keeps the choice between launches.
+    Turning it off restores automatic selection (Apple Speech when available,
+    otherwise Parakeet V2); a v3 preparation or inference error is shown rather
+    than silently switching engines.
   - **Apple Intelligence cleanup (Experiments › Clean up with Apple
     Intelligence, iOS 26+):** Off by default. For every style but `Verbatim`,
     one on-device FoundationModels pass before formatting fixes clearly

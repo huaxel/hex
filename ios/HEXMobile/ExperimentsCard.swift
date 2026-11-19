@@ -3,7 +3,9 @@ import SwiftUI
 /// Unfinished features, off until turned on here. They live in the App Group so the
 /// keyboard reads them too.
 struct ExperimentsCard: View {
+    @Bindable var dictation: DictationController
     @State private var fullKeyboard = FullKeyboardSettings().isEnabled
+    @State private var localParakeetV3 = LocalSpeechSettings().parakeetV3Enabled
     @State private var appleIntelligenceCleanup = AppleIntelligenceCleanupSettings().isEnabled
     @State private var customVocabulary = CustomVocabularySettings().isEnabled
     @State private var cleanupAvailability = AppleIntelligenceCleanupAvailability.current
@@ -63,6 +65,30 @@ struct ExperimentsCard: View {
             )
             .onChange(of: fullKeyboard) { _, enabled in
                 FullKeyboardSettings().isEnabled = enabled
+            }
+
+            Toggle(isOn: $localParakeetV3) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Local Parakeet v3")
+                        .font(.system(size: 15, weight: .regular))
+                        .foregroundStyle(HexTheme.textBase)
+                    Text("Transcribe on this iPhone in 25 languages")
+                        .font(.system(size: 12))
+                        .foregroundStyle(HexTheme.textMuted)
+                }
+            }
+            .tint(HexTheme.success)
+            .disabled(!dictation.canChangeSpeechEngine)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(
+                HexTheme.bgBase,
+                in: RoundedRectangle(cornerRadius: HexTheme.cardRadius, style: .continuous)
+            )
+            .onChange(of: localParakeetV3) { _, enabled in
+                if !dictation.setLocalParakeetV3Enabled(enabled) {
+                    localParakeetV3 = dictation.isLocalParakeetV3Enabled
+                }
             }
 
             Toggle(isOn: $appleIntelligenceCleanup) {
@@ -127,6 +153,7 @@ struct ExperimentsCard: View {
         }
         .onAppear {
             fullKeyboard = FullKeyboardSettings().isEnabled
+            localParakeetV3 = dictation.isLocalParakeetV3Enabled
             appleIntelligenceCleanup = AppleIntelligenceCleanupSettings().isEnabled
             customVocabulary = CustomVocabularySettings().isEnabled
             cleanupAvailability = AppleIntelligenceCleanupAvailability.current
