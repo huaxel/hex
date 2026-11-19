@@ -99,8 +99,11 @@ Install on Windows                        // setup.windows-installer
 ├── Setup.exe, per user, no admin -> managed versions\<version>\hex.exe
 │   ├── x64 without a Vulkan 1.2 driver -> installs; speech on the CPU + Settings note (#1240)
 │   ├── another version installed (e.g. self-updated) -> install this one over it
+│   ├── the setup engine is signed -> Smart App Control runs the copy extracted to %TEMP%
+│   │   (unsigned, it blocks setup: "Unable to execute file in the temporary directory", error 4551)
 │   └── finish -> Open Hex -> the first run downloads a model
 └── Settings › Apps -> uninstall every version, shortcut, Launch at login; keep data
+    └── the installed uninstaller is that same signed engine
 
 Install on Linux                          // setup.linux-installer
 └── curl … | sh -> signed feed -> verified artifact -> launcher + hex.service
@@ -130,8 +133,11 @@ frame. These checks do not exercise real speakers or a physical phone.
 
 The Windows installer is silently installed, reinstalled, installed over
 another version, and uninstalled on x64 and ARM64 runners by
-[test-windows-installer.ps1](../../scripts/test-windows-installer.ps1); no
-interactive install, SmartScreen prompt, or first launch on a real PC has been
+[test-windows-installer.ps1](../../scripts/test-windows-installer.ps1); with
+`-SignedEngine` it also checks that the installed uninstaller (the same engine
+bytes Setup extracts to `%TEMP%`) has a valid, timestamped Authenticode
+signature, and Release runs it that way. No interactive install, Smart App
+Control decision, SmartScreen prompt, or first launch on a real PC has been
 observed. The Linux library diagnosis has no automated check. The site's
 platform states were captured once in headless Chromium with `?platform=`.
 
@@ -388,7 +394,7 @@ Choose a supported language              // setup.language-conditioning; macOS +
 ├── Granite Speech 5.0 -> No language input; transcribes whichever of en, fr,
 │   de, es, pt, it, ja it hears, so it is offered under Auto too (#1252)
 ├── Whisper -> Use selected language to guide decoding; accuracy is not guaranteed
-├── Whisper (ivrit.ai's and NB-Whisper too), Qwen3-ASR 0.6B, QwenCleo-ASR 1.7B -> Vocabulary ->
+├── Whisper (ivrit.ai's, NB-Whisper's, and KB-Whisper's too), Qwen3-ASR 0.6B, QwenCleo-ASR 1.7B -> Vocabulary ->
 │   context prompt (vocabulary.md); output that only repeats it is dropped
 ├── Hebrew -> ivrit.ai Whisper large-v3-turbo, always with the `he` hint (it
 │   lost Whisper's language detection); stock Whisper turbo also offers it
@@ -396,6 +402,10 @@ Choose a supported language              // setup.language-conditioning; macOS +
 │   Whisper turbo also offer it
 ├── Norwegian -> NB-Whisper Medium, always with the `no` hint (Bokmål is all
 │   Hex measured); stock Whisper turbo also offers it (#1150)
+├── Swedish -> KB-Whisper Medium, always with the `sv` hint; its 6.6% WER on
+│   FLEURS Swedish is the model card's figure for its default checkpoint, not
+│   Hex's run; Parakeet v3 is Fastest there, and stock Whisper turbo also
+│   offers it (#1991)
 ├── Bangla -> Whisper only, with the `bn` hint; Auto lets Whisper guess per clip
 ├── Khmer -> Whisper only, with the `km` hint; Auto lets Whisper guess per clip
 └── Azerbaijani -> Whisper only, with the `az` hint; Auto lets Whisper guess per clip
@@ -910,6 +920,8 @@ Do not start it beside an existing listener.
 ```ts
 Completed output                         // output
 ├── Paste -> Current focus, in submission order
+│   ├── Back-to-back dictations with no key, click, or window change between
+│   │   -> joined with a space and sentence-aware capitalization (macOS, Windows)
 │   ├── Previous clipboard restored 500 ms later, unless something newer replaced it
 │   ├── Windows -> the transcript is marked out of clipboard history (Win+V) and cloud sync (#851)
 │   ├── Labs > Keep dictation on clipboard (every OS, off) -> the dictation stays on the clipboard (labs.md)
@@ -1609,6 +1621,17 @@ rewrites already persisted activations on load, checked by
 `application_matching_ignores_finder_bundle_extensions` and
 `loading_strips_finder_bundle_extensions_from_mode_applications`.
 
+The picker saves the name Finder shows for the bundle's file, which can differ
+from the name the running app reports (`Rex Beta.app` runs as `Rex`,
+`Visual Studio Code.app` as `Code`). The macOS frontmost read also keeps
+Finder's name for the frontmost bundle (`ContextSnapshot::bundle_name`, set
+only when it differs), and `application_is` accepts either, so Modes and
+Labs › YOLO mode match an app under both names. Checked by
+`an_application_selector_matches_the_bundles_finder_name_too` (context.rs)
+and `a_picked_app_sends_under_its_finder_name_or_its_own` (yolo_mode.rs).
+**Fixed on dev, Nov 19 2026:** before, a picked app whose file name differs
+from its own name never activated its Mode and YOLO mode never sent in it.
+
 **Fixed in 2.1.14:** through 2.1.13, a mode saved with that Finder
 preference enabled never activates and every dictation falls back to Global.
 Update to repair saved selections automatically. For older builds, the workaround
@@ -2063,8 +2086,11 @@ Linux beta                               // not macOS feature parity
 │   │   (kernel + Vulkan driver libraries), then another GPU, then the CPU;
 │   │   the row says which GPU stopped responding
 │   ├── A GPU load, prewarm or run that fails with a device error (hang,
-│   │   reset, lost device, out of memory) -> reloads on the CPU; once the CPU
-│   │   works, that GPU is recorded
+│   │   reset, lost device) -> reloads on the CPU; once the CPU works, that
+│   │   GPU is recorded
+│   ├── A run that fails out of memory (status 7) -> reloads on the CPU and is
+│   │   not recorded (another copy can fill the GPU, #1165); the dictation
+│   │   model says so in the row until a GPU load works or Hex restarts (#1984)
 │   ├── An integrated GPU whose warm 1.5 s run takes over 300 ms -> Auto times
 │   │   the CPU too and keeps the faster; a slower GPU is recorded (slow), so
 │   │   later loads go straight to the CPU (#484: UHD 620, Iris Plus 655)
@@ -2401,6 +2427,8 @@ Windows beta                             // x64 (Vulkan GPU) and ARM64 (CPU)
 ├── Transcription GPU -> ggml's Vulkan, discrete before integrated, CPU last;
 │   a failed GPU load retries on the CPU; the GPU record and Settings ›
 │   Speech engine work as on Linux (#856)
+│   ├── A run that fails out of memory -> CPU for this process, said in
+│   │   Speech engine until Hex restarts (#1984; not run on Windows)
 │   └── A launch that crashed starting the GPU (gpu-start.pending left in the
 │       data folder, same version) -> CPU only, warned in process.log, until
 │       Hex updates or the file is deleted (#662; not run on Windows)
@@ -2845,6 +2873,11 @@ macOS debug runtime                      // not release navigation
 `hex app -- --snap OUT --scene NAME` -> Rendered fixtures    // not proof capture/download/update happened
 Linux `hex` -> the Linux window on Rune, in the Hex process // dev.rune-ui
 ├── Calls the host directly: saves settings through it; woken on host changes
+├── Wayland frame: where winit draws the client-side frame (GNOME), a floating
+│   decorated window's bottom corners round with the frame's headerbar, and are
+│   square when maximized, tiled or fullscreen, as the frame is; a compositor that
+│   draws the decorations itself (KDE, sway, Hyprland) keeps its square content
+│   // Rune #1188, checked in a nested weston and under sway, not on a real GNOME session
 ├── Sidebar: General, Modes, History
 ├── Transcription picker -> ChooseModel / CancelModel; progress from the snapshot
 ├── First run -> the onboarding story; Microphone only while the privacy switch is off
@@ -2890,13 +2923,14 @@ Windows `hex app` -> one tray process, Rune window // dev.rune-ui-windows
 ├── Modes app icons: the executable's first icon (PrivateExtractIconsW)
 └── Not yet: custom caption
 iOS prototype (`HEXMobile`) -> Record/transcribe/copy and keyboard handoff
-├── Experiments: Full keyboard, Apple Intelligence cleanup, Custom vocabulary,
-│   and Local Parakeet v3 (off by default)
-├── Local Parakeet v3: prepare/reuse the multilingual Core ML model, persist
-│   choice, never silently fall back; switch only while idle
-├── Custom vocabulary (off): local term list applied across engines; Apple
-│   Speech hint is best effort, Parakeet batch gets none
-└── Proof limits: tests exist but no CI compiles iOS targets
+├── Experiments: Full keyboard, Apple Intelligence cleanup, Custom vocabulary
+├── Custom vocabulary (off by default): a local list of up to 100 terms; every
+│   engine spells matched words the listed way before cleanup and again after
+│   formatting
+├── Recognition hint: Apple Speech (iOS 26) contextual strings, best effort;
+│   Apple documents them only for DictationTranscriber, and Parakeet's batch
+│   path receives none
+└── Proof limits: unit tests only; no CI compiles the iOS targets
 Unmerged Windows / deferred features -> Not part of this map
 ```
 
@@ -2905,14 +2939,11 @@ Sources: [meeting.rs](../../src/meeting.rs),
 [control/developer_control.rs](../../src/control/developer_control.rs),
 `SCENES` in [rune_ui.rs](../../src/rune_ui.rs), [iOS guide](../../ios/README.md).
 The iOS custom vocabulary experiment stays off by default and keeps its list in
- the App Group. Apple Speech receives it as a best-effort recognition hint,
-unverified on a physical iPhone. The local-v3 switching regressions are in
-`ios/HEXMobileTests/DictationControllerTests.swift`; local-v3 setting coverage
-is in `LocalSpeechSettingsTests.swift`. Their existence is not proof of a
-passing full suite or real microphone-to-keyboard behavior. iOS physical-device
-proof and temporary-WAV failure cleanup remain gaps; best-effort deletion is
-not guaranteed deletion. See the [iOS guide](../../ios/README.md#physical-local-v3-check)
-for the observed local-v3 device report and remaining proof limits.
+the App Group. Apple Speech also receives it as a best-effort recognition hint,
+unverified on a physical iPhone; Apple documents contextual strings only for
+`DictationTranscriber`, and Parakeet's batch path receives none. iOS
+physical-device proof and temporary-WAV failure cleanup remain gaps;
+best-effort deletion is not guaranteed deletion.
 
 `dev.rune-ui` lives in [rune_ui.rs](../../src/rune_ui.rs) and its pane modules;
 its tests drive the Rune runtime headlessly (navigation; General rows per

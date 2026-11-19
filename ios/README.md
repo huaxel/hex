@@ -4,29 +4,17 @@
 (`HEXKeyboard`), and Live Activity + Control Center widget extension
 (`HEXWidgets`). The containing app records a generation-scoped temporary WAV,
 transcribes on-device with Apple Speech (`SpeechTranscriber` on iOS 26+) or
-FluidAudio Parakeet V2 (iOS 18+), or Parakeet v3 after its explicit experiment
-opt-in, and removes each capture's file after
-inference, cancellation, or failure. The keyboard extension sends commands and
-inserts completed text over the shared App Group (`group.com.kitlangton.hex.mobile`);
-it never accesses the microphone, speech model, or network.
+FluidAudio Parakeet V2 (iOS 18+), and removes each capture's file after
+inference, cancellation, or failure. During a warm session the keyboard
+extension sends commands and inserts completed text over the shared App Group
+(`group.anomaly.hex.mobile`). Otherwise it dictates by itself (in-keyboard
+dictation, iOS 26+): iOS refuses to record from a keyboard extension
+directly, so it captures through `getUserMedia` in a hidden `WKWebView`
+under Hex's microphone permission, writes a temporary WAV, and transcribes
+it on-device with Apple Speech, downloading the speech assets on first use
+(`HEXKeyboard/KeyboardLocalDictation.swift`). Audio never leaves the iPhone.
 
 ## Capabilities
-
-- **Local Parakeet v3 (Experiments, off by default):**
-  - Turn on **Experiments › Local Parakeet v3** in the containing app to
-    download and prepare FluidAudio's multilingual v3 Core ML model. An
-    existing v3 cache is reused; the selected engine is named in the app.
-  - This selection runs on the iPhone, not a server. A v3 preparation or
-    inference failure is shown instead of silently choosing Apple Speech.
-  - The choice persists between launches. Turning it off restores automatic
-    selection (supported Apple Speech, otherwise Parakeet V2); downloaded
-    model files are retained. The toggle is unavailable during preparation,
-    recording, permission requests, or accepted transcription work.
-  - `LocalSpeechSettingsTests` covers defaults, persistence and malformed
-    values. `DictationControllerTests.testLocalV3OptInPreparesAndCanBeTurnedOffAfterReadiness`
-    and `testLocalV3CannotSwitchDuringRecordingOrAcceptedTranscription`
-    cover switching/readiness with fake audio and transcription. They are
-    not proof of physical microphone-to-keyboard behavior; verify that below.
 
 - **One-tap keyboard dictation (`HEXKeyboard`):**
   - **Setup:** The keyboard needs Full Access to reach Hex through the App
@@ -39,7 +27,7 @@ it never accesses the microphone, speech model, or network.
     do nothing in a keyboard extension, so the keyboard opens Hex through
     the `UIApplication` at the end of its responder chain
     (`ContainingAppOpener`).
-  - **Cold start:** Tapping **Dictate** opens the containing app
+  - **Cold start (before iOS 26):** Tapping **Dictate** opens the containing app
     (`hex-dictation://keyboard/record?...`) with a 10-second
     handoff window, starts recording, and opens the selected host app's URL
     scheme (`messages://`, `slack://`, `claude://`, `chatgpt://`,
@@ -75,11 +63,10 @@ it never accesses the microphone, speech model, or network.
     `Casual` (lowercase chat without trailing period), `Notes` (spoken
     `"bullet"` / `"next line"` markers), and `Verbatim`, with cursor-aware
     insertion spacing and repeating backspace.
-  - **Full keyboard Hex key (Experiments › Full keyboard):** A tap does
-    nothing, so a stray one while typing is harmless. A still hold of 0.35 s
-    starts dictation in a warm session (or opens Hex without one), with a
-    haptic. Moving more than 10 pt before then opens the style and **Return
-    to** menu; releasing over a row picks it, and releasing elsewhere leaves
+  - **Full keyboard Hex key (Experiments › Full keyboard):** A tap, or a
+    still hold of 0.35 s, starts dictation: in a warm session, else inside
+    the keyboard (in-keyboard dictation, iOS 26+), else by opening Hex. Moving
+    more than 10 pt first opens the style and **Return to** menu; releasing over a row picks it, and releasing elsewhere leaves
     the menu open for taps (`HexKeyGesture`). VoiceOver activation dictates,
     and the **Dictation styles** action opens the menu.
   - **Apple Intelligence cleanup (Experiments › Clean up with Apple
@@ -109,9 +96,12 @@ it never accesses the microphone, speech model, or network.
     audio file.
   - Phone/FaceTime/Siri audio interruptions finalize captures `>= 300 ms` so
     spoken words are not lost, cancel shorter taps cleanly out of `Listening`,
-    and resume warm keepalive when iOS signals `.shouldResume`. Bluetooth HFP
-    input is opt-in (**Use Bluetooth headphones**, default off) so AirPods stay
-    in full-fidelity output by default.
+    and resume warm keepalive when iOS signals `.shouldResume`. **Always use
+    iPhone microphone** (on by default) records from the built-in microphone in
+    `playAndRecord` with `mixWithOthers` and A2DP output, in the app and in
+    in-keyboard dictation, so music in a car or headphones keeps playing and the
+    route never drops into call audio. Turning it off allows Bluetooth HFP
+    microphones, which pause other audio.
 - **Action Button, Control Center, Back Tap & Live Activity:**
   - `DictateWithHexIntent` (`AudioRecordingIntent` + `LiveActivityIntent`) and
     `HexDictationControl` (`ControlWidget`) start recording on first press with
@@ -127,62 +117,6 @@ cd ios
 xcodegen generate
 xcodebuild test -project HEXMobile.xcodeproj -scheme HEXMobile -destination "id=<SIM_UDID>"
 ```
-
-### Personal signing without editing source identities
-
-`Config.xcconfig` keeps the upstream production defaults and optionally reads
-`build/Local.xcconfig` (ignored by Git). For a personal development install,
-put your own `DEVELOPMENT_TEAM`, `HEX_BUNDLE_ID_PREFIX`,
-`HEX_APP_GROUP_IDENTIFIER`, `HEX_URL_SCHEME`, and `HEX_DISPLAY_NAME` there,
-then regenerate the same `HEXMobile.xcodeproj` with `xcodegen generate`.
-The app and keyboard read their build-expanded identity from Info.plist;
-there is no need to copy or patch Swift files. Use a distinct URL scheme for
-side-by-side installs so the keyboard cannot open the other Hex. To update
-an existing local app without losing its data, retain its exact bundle IDs
-and App Group. Keep personal overrides out of commits.
-
-### Physical local-v3 check
-
-1. Build the containing app, keyboard and widgets from this checkout.
-2. Turn on Experiments › Local Parakeet v3; wait for **Parakeet v3** to be ready.
-3. Dictate a short English sentence and a sentence in another supported
-   language in the app. Check the returned words; no server is needed.
-4. Enable this install's keyboard and Full Access, open an empty note, start
-   a warm session, and dictate through the keyboard. Verify text is inserted
-   once, warm dictation does not switch apps, and Stop/Cancel clear recording.
-5. Relaunch to check persistence. Turn the experiment off to verify the
-   previous automatic engine remains usable.
-
-Model speed checks are not a substitute for this flow, natural-speech
-accuracy, interruption/recovery, sustained battery/thermal behavior, or a
-verified background recording session. Record observed results separately
-from the existence of tests.
-
-### Observed local verification (2026-11-04)
-
-- A personally signed, optimized build from the upstream-based local branch
-  ran on an iPhone 13 Pro Max (iOS 27.2). The person enabled Local Parakeet v3
-  and reported correct, quick transcription of microphone audio in the app.
-- Keyboard dictation initially opened the containing app; on retry the
-  person reported the warm flow was working. The initial snapshot/heartbeat
-  was not captured, so its precise cause is unproven; there was no
-  app-switch fix. Cold-session handoff remains expected.
-- Four `LocalSpeechSettingsTests` passed with Darwin XCTest on the Mac.
-  The iOS Release app build and `build-for-testing` passed. The controller
-  regressions compiled but were not executed; no simulator runtime was
-  installed. This is not a passing full iOS test-suite claim.
-- Independent read-only code review was unavailable in this round because
-  the review CLI could not authenticate; the implementation diff was reviewed
-  in-session.
-- The separate Linux repository gate passed fmt, shape and clippy, then
-  reported 1,585 passing tests, two desktop Labs UI failures and 21 ignored
-  tests. The same two failures (`new_in_labs_isnt_repeated_in_the_grid` and
-  the `mac-labs-link` goldens) reproduced with upstream's original Rune pin,
-  with identical image-difference counts. Goldens were not rewritten to
-  conceal them. This is not a green full repository gate.
-- Exact microphone-to-keyboard latency, sustained battery/thermal behavior,
-  long background sessions, failure recovery, and switching the experiment
-  off after a real recording were not measured in this smoke test.
 
 ## Simulator vs. Physical iPhone Proof Limits
 
@@ -208,3 +142,16 @@ from the existence of tests.
 - **No iOS CI:** Custom vocabulary is covered by unit tests only. No CI job
   compiles or tests the iOS targets, so these checks run only in a local
   `xcodebuild test`.
+
+## Internal TestFlight releases
+
+[Hex Mobile in App Store Connect](https://appstoreconnect.apple.com/apps/6836837368/testflight/ios)
+uses Anomaly's signing team. The GitHub **Release Hex Mobile** workflow checks
+`dev` at noon and 6 p.m. Chicago time, or on manual dispatch, and cuts an
+`ios-beta-*` prerelease when iOS inputs have changed. These tags are separate
+from desktop releases. The marketing version stays fixed across beta builds.
+
+The Xcode Cloud workflow needs a tag start condition with prefix `ios-beta-`,
+container `ios/HEXMobile.xcodeproj`, shared scheme `HEXMobile`, an iOS Archive
+action, and a TestFlight post-action for **Hex Internal**. Cloud owns the build
+number. Verify the run's source tag and the processed build in that group.

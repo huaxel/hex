@@ -1,7 +1,7 @@
 name: HEXMobile
 options:
   minimumXcodeGenVersion: 2.46.0
-  bundleIdPrefix: com.kitlangton.hex
+  bundleIdPrefix: anomaly.hex
   deploymentTarget:
     iOS: "18.0"
   xcodeVersion: "2660"
@@ -11,10 +11,8 @@ packages:
     exactVersion: 0.15.5
 settings:
   base:
+    DEVELOPMENT_TEAM: 5NZ4Q7NXJ4
     SWIFT_VERSION: 6.0
-configFiles:
-  Debug: Config.xcconfig
-  Release: Config.xcconfig
 targets:
   HEXMobile:
     type: application
@@ -34,18 +32,15 @@ targets:
     info:
       path: HEXMobile/Info.plist
       properties:
-        CFBundleDisplayName: $(HEX_DISPLAY_NAME)
-        HexAppGroupIdentifier: $(HEX_APP_GROUP_IDENTIFIER)
-        HexURLScheme: $(HEX_URL_SCHEME)
-        HexKeyboardBundleIdentifier: $(HEX_BUNDLE_ID_PREFIX).mobile.keyboard
+        CFBundleDisplayName: Hex
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CADisableMinimumFrameDurationOnPhone: true
         CFBundleURLTypes:
           - CFBundleTypeRole: Editor
-            CFBundleURLName: $(HEX_BUNDLE_ID_PREFIX).mobile.keyboard-session
+            CFBundleURLName: anomaly.hex.mobile.keyboard-session
             CFBundleURLSchemes:
-              - $(HEX_URL_SCHEME)
+              - hex-dictation
         NSMicrophoneUsageDescription: Hex records only while you dictate and transcribes locally on this iPhone.
         NSSpeechRecognitionUsageDescription: Hex uses Apple's on-device SpeechTranscriber to turn your recording into text.
         NSSupportsLiveActivities: true
@@ -74,7 +69,7 @@ targets:
         MARKETING_VERSION: 0.2.0
         OTHER_LDFLAGS: $(inherited) -weak_framework FoundationModels
         OTHER_SWIFT_FLAGS: $(inherited) -Xfrontend -disable-autolink-framework -Xfrontend FoundationModels
-        PRODUCT_BUNDLE_IDENTIFIER: $(HEX_BUNDLE_ID_PREFIX).mobile
+        PRODUCT_BUNDLE_IDENTIFIER: anomaly.hex.mobile
         PRODUCT_NAME: HEX
     scheme:
       gatherCoverageData: false
@@ -89,10 +84,9 @@ targets:
     info:
       path: HEXKeyboard/Info.plist
       properties:
-        CFBundleDisplayName: $(HEX_DISPLAY_NAME) Keyboard
-        HexAppGroupIdentifier: $(HEX_APP_GROUP_IDENTIFIER)
-        HexURLScheme: $(HEX_URL_SCHEME)
-        HexKeyboardBundleIdentifier: $(HEX_BUNDLE_ID_PREFIX).mobile.keyboard
+        CFBundleDisplayName: Hex Keyboard
+        NSMicrophoneUsageDescription: Hex records only while you dictate and transcribes locally on this iPhone.
+        NSSpeechRecognitionUsageDescription: Hex uses Apple's on-device SpeechTranscriber to turn your recording into text.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
@@ -111,7 +105,7 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: 0.2.0
-        PRODUCT_BUNDLE_IDENTIFIER: $(HEX_BUNDLE_ID_PREFIX).mobile.keyboard
+        PRODUCT_BUNDLE_IDENTIFIER: anomaly.hex.mobile.keyboard
         PRODUCT_NAME: HEXKeyboard
         SKIP_INSTALL: YES
   HEXWidgets:
@@ -124,10 +118,7 @@ targets:
     info:
       path: HEXWidgets/Info.plist
       properties:
-        CFBundleDisplayName: $(HEX_DISPLAY_NAME)
-        HexAppGroupIdentifier: $(HEX_APP_GROUP_IDENTIFIER)
-        HexURLScheme: $(HEX_URL_SCHEME)
-        HexKeyboardBundleIdentifier: $(HEX_BUNDLE_ID_PREFIX).mobile.keyboard
+        CFBundleDisplayName: Hex
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
@@ -139,7 +130,7 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: 0.2.0
-        PRODUCT_BUNDLE_IDENTIFIER: $(HEX_BUNDLE_ID_PREFIX).mobile.widgets
+        PRODUCT_BUNDLE_IDENTIFIER: anomaly.hex.mobile.widgets
         PRODUCT_NAME: HEXWidgets
         SKIP_INSTALL: YES
   HEXMobileTests:
@@ -156,5 +147,5 @@ targets:
         BUNDLE_LOADER: $(TEST_HOST)
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: YES
-        PRODUCT_BUNDLE_IDENTIFIER: $(HEX_BUNDLE_ID_PREFIX).mobile.tests
+        PRODUCT_BUNDLE_IDENTIFIER: anomaly.hex.mobile.tests
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/HEX.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/HEX

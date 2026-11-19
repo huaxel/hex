@@ -746,8 +746,8 @@ Shortcut dictation (hold, lock, or Toggle)            // dictate.yolo-mode
 │   └── Escape after the release (macOS) -> No Return; History records Dictation
 └── Another app -> Paste as usual, without Return
 Never: Dictate without processing, `hex dictation`, the local API,
-printing stops, Copy dictation only, Live typing, meetings, captures,
-Paste last dictation
+printing stops, Live typing, meetings, captures, Paste last dictation
+Copy dictation only on -> YOLO mode still pastes and sends in its apps
 ```
 
 Details and checks in [labs.md](labs.md).
@@ -1604,7 +1604,7 @@ Model advertises streaming, GPU device             // dictate.streaming
   └── Owner already claimed the commit -> Wait up to 750 ms; never paste over it
   Picker -> "Streams" tag on catalog models whose artifact streams   // setup.model-card
   Picker -> The saved language's Recommended/Fastest/Most accurate cards first  // setup.model-routing
-  ├── el: Cohere; tr, ms, fil, fa, mk, ar, ja, fi, sv, da: Whisper turbo first
+  ├── el: Cohere; tr, ms, fil, fa, mk, ar, ja, fi, da: Whisper turbo first
   ├── auto, yue, ko: no SenseVoice; mt: Parakeet v3 only (Whisper fails Maltese)
   ├── en: Underdog Bark 3.0 Pro and Clean (Parakeet v3 fine-tunes; Clean
   │   drops filler words) follow without a badge
@@ -1621,6 +1621,11 @@ Model advertises streaming, GPU device             // dictate.streaming
   │   only, always with the `no` hint, 539 MB; 6.68% WER on FLEURS Norwegian
   │   test against Whisper turbo's 8.94%, Hex's run), then Whisper turbo for
   │   Vocabulary (#1150)
+  ├── sv: KB-Whisper Medium Recommended (National Library of Sweden, Swedish
+  │   only, always with the `sv` hint, 539 MB; 6.6% WER on FLEURS Swedish
+  │   test, the model card's figure for its default checkpoint and not Hex's
+  │   run), then Parakeet v3 as Fastest and Whisper turbo for Vocabulary
+  │   (#1991)
   ├── en, fr, de, es, pt, it, ja: Granite Speech 5.0 (IBM's TurboCTC, 506 MB,
   │   no hint, also offered under Auto) follows without a badge: on FLEURS
   │   test it trailed Parakeet Unified/v3 in every European language and tied
@@ -2192,6 +2197,27 @@ sequence and the identifier match, not insertion into a real session.
 **Windows paste (issue 477):** Windows puts the transcript on the clipboard,
 waits for Shift, Alt, and Win to come up, sends Ctrl+V, and restores the
 previous clipboard 500 ms later unless a newer paste or another app changed it.
+Back-to-back dictations join as they do on macOS: when no key, click, or
+foreground-window change happened between them, the next transcript is pasted
+as a continuation with a space and sentence-aware capitalization. Paste last
+dictation continues too. A real key or click (any of the five mouse buttons)
+ends the join, and so does input another program injects, while the
+shortcut's own chord and Hex's own synthetic keys do not; a window switch ends
+it as a context change does on macOS. The shortcut's own press never ends
+it, even when Labs › Share dictation shortcut lets that key reach the app,
+while a bare press of the same key without the shortcut's modifiers is
+ordinary typing and does end the join.
+Everything in between is the shared [`continuation`](../../src/continuation.rs)
+policy. Sources: `ends_continuation` in
+[windows/input/activity.rs](../../src/windows/input/activity.rs), wired into the
+keyboard and mouse hooks in [windows/input.rs](../../src/windows/input.rs), and
+`text_to_paste` in [windows/paste.rs](../../src/windows/paste.rs). Checks:
+`real_input_ends_a_paste_continuation_but_hexs_own_events_do_not`,
+`a_shared_shortcut_trigger_does_not_end_a_paste_continuation`,
+`a_bare_trigger_key_ends_a_paste_continuation_but_the_shortcut_does_not`,
+`back_to_back_dictations_join_until_input_breaks_the_session`, and
+`a_paste_joins_only_the_session_that_made_it`; no automated check pastes into a
+real Windows app.
 Labs › Terminal paste (`paste_with_shift`, off by default; on Linux it is a
 General › Advanced row) sends Ctrl+Shift+V instead, for apps that ignore
 a synthetic Ctrl+V (the herdr desktop app); a Labs › Terminal paste shortcut

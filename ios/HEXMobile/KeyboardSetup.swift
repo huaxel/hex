@@ -7,7 +7,7 @@ import UIKit
 @MainActor
 @Observable
 final class KeyboardSetupMonitor {
-    static let keyboardBundleID = AppIdentity.keyboardBundleID
+    static let keyboardBundleID = "anomaly.hex.mobile.keyboard"
 
     private let bridge: KeyboardBridge
 
