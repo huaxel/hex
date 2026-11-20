@@ -118,7 +118,9 @@ it on-device with Apple Speech, downloading the speech assets on first use
     Google's Apache-2.0 `bert_uncased_L-4_H-512_A-8` on generated examples,
     shipped as an int8 Core ML model (28.5 MB) with its WordPiece vocabulary
     once, in `HEXKeyboard.appex` (`HEXKeyboard/CleanupTagger/`). The app loads
-    it from there. `CleanupTokenizer` matches Hugging Face's `BertTokenizer`,
+    it from there. The keyboard extension never loads it: iOS caps an extension
+    process below what the model and its Core ML runtime need, and HEXKeyboard was
+    killed at its per-process limit with the experiment on. `CleanupTokenizer` matches Hugging Face's `BertTokenizer`,
     including its Unicode 8.0 character classes. The model loads on the Neural
     Engine or CPU when a dictation starts recording with the experiment on,
     stays loaded, and is freed on a memory warning. Cleanup gets 150 ms; a

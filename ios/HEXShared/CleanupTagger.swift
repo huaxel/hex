@@ -31,8 +31,15 @@ nonisolated struct CleanupTaggerSettings {
 /// recording with the experiment on (`prepareIfEnabled`), so the load (about 150 ms on the
 /// CPU in the simulator) is over before the transcript arrives, stays loaded while the
 /// process lives, and is released on a memory warning.
+///
+/// It never loads inside the keyboard extension itself: iOS caps an extension process far
+/// below what the int8 model and its Core ML runtime need, and HEXKeyboard was killed at
+/// its per-process limit (4,928 pages, 2026-11-20 14:13) with the experiment on.
 nonisolated final class CleanupTagger: @unchecked Sendable {
     static let shared = CleanupTagger()
+
+    /// Whether this process can hold the model. A keyboard extension cannot.
+    static let canRun = !Bundle.main.bundlePath.hasSuffix(".appex")
 
     /// P(DELETE) a word must exceed to be removed (1/45 false deletes on hand-written
     /// clean sentences, against 3/45 at 0.95, with the same self-correction accuracy).
@@ -146,6 +153,7 @@ nonisolated final class CleanupTagger: @unchecked Sendable {
     ) async -> String {
         guard settings.isEnabled,
               style != .verbatim,
+              canRun,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return text
         }
@@ -159,7 +167,7 @@ nonisolated final class CleanupTagger: @unchecked Sendable {
         settings: CleanupTaggerSettings = CleanupTaggerSettings(),
         tagger: CleanupTagger = .shared
     ) {
-        guard settings.isEnabled, style != .verbatim else { return }
+        guard settings.isEnabled, style != .verbatim, canRun else { return }
         tagger.prepare()
     }
 

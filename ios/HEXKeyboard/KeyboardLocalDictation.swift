@@ -210,7 +210,8 @@ final class KeyboardLocalDictation {
                         transcribeMS: Int((Date().timeIntervalSince(started) * 1000).rounded()),
                         raw: heard,
                         fixed: corrected,
-                        tagged: CleanupTaggerSettings().isEnabled && style != .verbatim ? cleaned : nil,
+                        tagged: CleanupTagger.canRun && CleanupTaggerSettings().isEnabled && style != .verbatim
+                            ? cleaned : nil,
                         translated: translated
                     )
                     : nil
