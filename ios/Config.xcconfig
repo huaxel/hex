@@ -1,7 +1,8 @@
-// Production defaults. Personal development overrides stay in ios/build.
-DEVELOPMENT_TEAM = QC99C9JE59
-HEX_BUNDLE_ID_PREFIX = com.kitlangton.hex
-HEX_APP_GROUP_IDENTIFIER = group.com.kitlangton.hex.mobile
+// Production defaults. Personal development overrides stay in ios/build,
+// which git never commits.
+DEVELOPMENT_TEAM = 5NZ4Q7NXJ4
+HEX_BUNDLE_ID_PREFIX = anomaly.hex
+HEX_APP_GROUP_IDENTIFIER = group.anomaly.hex.mobile
 HEX_URL_SCHEME = hex-dictation
 HEX_DISPLAY_NAME = Hex
 
