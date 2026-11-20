@@ -566,7 +566,9 @@ to a mode by application and, 300 ms after the last change, starts the shared
 picker's installed-only preparation for the mode's choice; a mode without a
 choice switches nothing. Matching is by application on macOS and Windows
 alike: a mode's website rules are ignored, so a mode chosen only by website
-never switches. Hex's own window, and a moment with no application in front,
+never switches. On macOS an app matches under its own name or the name
+Finder shows for its bundle, which is what the picker saves (`Rex Beta.app`
+runs as `Rex`); Windows matches its process name. Hex's own window, and a moment with no application in front,
 are ignored: they neither schedule nor cancel a switch. A manual model
 choice cancels a pending switch, launching Hex records the mode in front
 without switching it, and a switch due while a dictation records or
@@ -587,7 +589,8 @@ models. Checks:
 `the_speech_row_needs_the_lab_and_a_capable_os` in
 [speech_model_tests.rs](../../src/rune_ui/speech_model_tests.rs); the switch
 policy tests in
-[app_model_switching.rs](../../src/transcription/app_model_switching.rs);
+[app_model_switching.rs](../../src/transcription/app_model_switching.rs),
+`a_mode_picked_under_its_finder_name_switches` (macOS) among them;
 `app_model_switching_is_opt_in_and_mode_speech_choices_round_trip` and
 `loading_drops_mode_speech_choices_that_no_longer_validate` in
 [app_settings.rs](../../src/app_settings.rs); and
@@ -828,6 +831,9 @@ gate as each job's output commits and calls
 `windows::paste::WindowsPaster::copy_only`, which writes an ordinary entry,
 calls its `ClipboardRestore::keep`, ends its continuation, and sends no
 keystroke, so the dictation appears in Windows clipboard history (Win+V).
+Windows reports it as `copied`, not `pasted` (so does a dictation whose paste
+target was the desktop or a taskbar; see
+[dictation.md](dictation.md#windows-paste-target)).
 History and Paste last dictation
 update as for a paste, and Paste last dictation still pastes (meeting pastes
 on macOS too). With Labs › YOLO mode on, a dictation YOLO mode sends (its
@@ -1838,7 +1844,7 @@ Picker row -> "Parakeet Ultra" + Labs tag; 25 languages, offline, Token     // l
 │   Ultra by Moondream, based on NVIDIA Parakeet TDT 0.6B v3. GGUF conversion and
 │   quantization by handy-computer. Creative Commons Attribution 4.0 International
 │   (CC BY 4.0)."); the publisher's NOTICE; Source and License links
-├── "Published conversion benchmarks; not measured in Hex" (folded) -> conditions
+├── "Published benchmarks; not measured in Hex" (folded) -> conditions
 │   (FLEURS test, Q8_0, CUDA, batch 8, each language's hint, no timestamps,
 │   transcribe.cpp 021aa17d; file digest, dataset revision, scorer unknown), then
 │   25 FLEURS WERs from transcribe.cpp 7045d1c's catalog/parakeet-ultra.json
@@ -3217,6 +3223,28 @@ vocabulary list itself (rewriting and search), and Linux's Terminal paste.
 
 ## Features
 
+- Paste Last picker: tapping Paste Last pastes the newest ready dictation or
+  finished annotation, and holding it (⌥⇧V) opens a picker of recent rows, or
+  all of History; History then lists dictations, annotations, screenshots and
+  recordings together with one search and a type filter (macOS; Dev-audience,
+  off by default). Its switch is `labs.paste_last_picker`, and the gate,
+  `labs::paste_last_picker()`, is where the work starts: the picker and its
+  gesture, History's unified list and the rows it reads, and the words a
+  deliberate cancel keeps. Off, Paste Last and History behave exactly as
+  before. Checks: `paste_last_picker_is_its_own_switch_and_macos_only` in
+  [labs.rs](../../src/labs.rs); the picker's `paste::browse`,
+  `paste::recent`, `paste::gesture` and `paste::capture` tests; History's
+  `history::` tests; `one_history_filters_and_searches_the_real_owners_without_enlarging_paste_last`
+  in [history/unified/proof.rs](../../src/rune_ui/history/unified/proof.rs);
+  and `a_held_shortcut_browses_real_rows_and_clicks_choose_the_original_item`
+  in [paste_picker/proof.rs](../../src/rune_ui/paste_picker/proof.rs), a native
+  Mac proof that needs a login session and an explicit `--ignored` run. The
+  unified History exists only in macOS builds, so its `--snap` scenes
+  (`mac-history`, `mac-history-capture`, `mac-history-filtered`,
+  `mac-history-types`, `mac-history-search`, `mac-history-search-empty`,
+  `mac-history-empty`) render on a Mac and have no Linux golden. Not yet
+  observed: a real held shortcut in a desktop login, a receiving app's paste
+  of every row kind, and the picker over a real display.
 - Live chapters: chapter a meeting's transcript live while it records
   (macOS, Apple Intelligence; see
   [Live Chapters](meetings.md#live-chapters-labs)). Its own switch is

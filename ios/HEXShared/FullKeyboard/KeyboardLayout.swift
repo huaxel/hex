@@ -74,11 +74,13 @@ nonisolated struct KeyboardMetrics: Equatable, Sendable {
     let keysBottom: CGFloat
     let cornerRadius: CGFloat
 
-    /// Matches iOS 26 portrait keyboard geometry inside the system's +17 pt Liquid Glass crown:
-    /// 35 pt strip area + 218 pt of keys (4 × 45 pt + 3 × 11 pt + 5 pt) = 253 pt extension height.
+    /// iOS 26 key geometry with a 44 pt suggestion strip: 44 pt + 218 pt of keys
+    /// (4 × 45 pt + 3 × 11 pt + 5 pt) = 262 pt. The 35 pt strip assumed iOS 26's +17 pt
+    /// Liquid Glass crown above the extension; iOS 27 adds none, which left suggestions
+    /// cramped against the keyboard's top edge (TestFlight build 4).
     static let portrait = KeyboardMetrics(
         side: 6.5, gap: 6, rowGap: 11, keyHeight: 45,
-        stripTop: 0, stripHeight: 33, stripBottom: 2,
+        stripTop: 0, stripHeight: 44, stripBottom: 0,
         keysTop: 0, keysBottom: 5, cornerRadius: 8.5
     )
 
@@ -86,7 +88,7 @@ nonisolated struct KeyboardMetrics: Equatable, Sendable {
     /// 39 pt strip area + 137 pt of keys (4 × 27.5 pt + 3 × 8 pt + 3 pt) = 176 pt extension height.
     static let landscape = KeyboardMetrics(
         side: 4, gap: 6, rowGap: 8, keyHeight: 27.5,
-        stripTop: 0, stripHeight: 33, stripBottom: 6,
+        stripTop: 0, stripHeight: 39, stripBottom: 0,
         keysTop: 0, keysBottom: 3, cornerRadius: 7.5
     )
 
@@ -122,6 +124,20 @@ nonisolated struct KeyboardMetrics: Equatable, Sendable {
 
 /// Pure geometry of the full keyboard: every key's frame and touch target for one width,
 /// layer and field kind. Coordinates are in the keyboard view, strip included.
+/// Where the full keyboard's Hex key sits. The strip's trailing edge keeps a full-width
+/// space bar and gives the recording animation a starting point.
+nonisolated enum HexKeyPlacement: String, CaseIterable, Sendable {
+    case rightOfSpace
+    case leftOfSpace
+    case stripLeading
+    case stripTrailing
+
+    /// The snapshot stage's `--hex-placement` can render the others for comparison.
+    nonisolated(unsafe) static var current: HexKeyPlacement = .stripTrailing
+
+    var isInStrip: Bool { self == .stripLeading || self == .stripTrailing }
+}
+
 nonisolated struct KeyboardLayout: Equatable, Sendable {
     /// Matches Apple's 50 pt shift/delete beside 37.3 pt letters on 440 pt Pro Max (`50 / 37.3 = 1.34`).
     static let modifierWidthRatio: CGFloat = 1.34
@@ -173,7 +189,12 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
 
     /// Where the suggestion / undo strip sits.
     var stripFrame: CGRect {
-        CGRect(x: horizontalInset, y: metrics.stripTop, width: width - 2 * horizontalInset, height: metrics.stripHeight)
+        let full = CGRect(x: horizontalInset, y: metrics.stripTop, width: width - 2 * horizontalInset, height: metrics.stripHeight)
+        guard let hex = key(.hex), hex.row < 0 else { return full }
+        let reserved = hex.frame.width + metrics.side + metrics.gap
+        return HexKeyPlacement.current == .stripLeading
+            ? CGRect(x: full.minX + reserved, y: full.minY, width: full.width - reserved, height: full.height)
+            : CGRect(x: full.minX, y: full.minY, width: full.width - reserved, height: full.height)
     }
 
     var keysAreaFrame: CGRect {
@@ -316,6 +337,10 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
         if showsGlobe {
             leading.append((.globe, modW, "globe"))
         }
+        let placement = HexKeyPlacement.current
+        if placement == .leftOfSpace {
+            leading.append((.hex, modW, "hex"))
+        }
         var trailing: [(KeyKind, CGFloat, String)] = []
         switch field {
         case .text:
@@ -327,7 +352,9 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
             trailing.append((.character("@"), lw, "@"))
             trailing.append((.character("."), lw, "."))
         }
-        trailing.append((.hex, modW, "hex"))
+        if placement == .rightOfSpace {
+            trailing.append((.hex, modW, "hex"))
+        }
         trailing.append((.returnKey, returnW, "return"))
 
         let fixed = (leading + trailing).reduce(0) { $0 + $1.1 }
@@ -364,6 +391,14 @@ nonisolated struct KeyboardLayout: Equatable, Sendable {
                     label: item.3
                 ))
             }
+        }
+        if placement.isInStrip {
+            // A bare mark in a target wider than tall, inset like the suggestion pills.
+            let height = m.stripHeight - 8
+            let width: CGFloat = 44
+            let x = placement == .stripLeading ? left : right - width
+            let frame = CGRect(x: x, y: m.stripTop + 4, width: width, height: height)
+            keys.append(KeyboardKey(kind: .hex, row: -1, frame: frame, hitFrame: frame.insetBy(dx: -4, dy: -4), label: "hex"))
         }
         return keys
     }

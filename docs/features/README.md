@@ -389,8 +389,9 @@ Language row is unexercised.
 
 ```ts
 Choose a supported language              // setup.language-conditioning; macOS + Linux picker
-├── Parakeet v3, Orukeet, and Parakeet Ultra -> Detect language from audio;
-│   also offered under Auto; the selected language does not constrain output
+├── Parakeet v3, Orukeet, Fluid Speech Pro, and Parakeet Ultra -> Detect
+│   language from audio; also offered under Auto; the selected language does
+│   not constrain output
 ├── Granite Speech 5.0 -> No language input; transcribes whichever of en, fr,
 │   de, es, pt, it, ja it hears, so it is offered under Auto too (#1252)
 ├── Whisper -> Use selected language to guide decoding; accuracy is not guaranteed
@@ -480,6 +481,13 @@ Settings picker > Every model row          // fixed height; scrolls
 │   "not measured in Hex"; never recommended or badged. Checks:
 │   `orukeet_is_offered_for_exactly_parakeet_v3s_languages_and_never_badged`,
 │   `orukeets_details_credit_its_base_and_cover_its_languages_once`
+├── Fluid Speech Pro -> ordinary row with Details: languages, the CC BY 4.0  // setup.fluid-speech-pro
+│   credit and notice, Source/License links, folded published benchmarks "not
+│   measured in Hex": the card's FLEURS figures for 24 of its 25 languages
+│   (greedy decoding, the reference NeMo model; no English figure); never
+│   recommended or badged. Checks:
+│   `fluid_speech_pro_is_offered_for_exactly_parakeet_v3s_languages_and_never_badged`,
+│   `fluid_speech_pros_details_credit_its_bases_and_cover_its_languages_once`
 ├── "Add model file…" in the header -> imported cards after the catalog:  // setup.custom-models
 │   Imported · family · languages · Not benchmarked · file · licence · SHA-256
 │   prefix; Rename, Remove (not the active
@@ -516,9 +524,10 @@ macOS (Metal), Windows, and Japanese, Korean, Chinese, or Vietnamese audio.
 Parakeet v3 remains available for Portuguese and its other existing language
 choices. Its card explains the limitation and suggests Whisper for
 language-guided transcription. It is also offered under Auto: it detects the
-language from the audio and takes no hint, as do Orukeet, Parakeet Ultra, and
-Granite Speech 5.0. A hint-taking model without `stt.capability.lang_detect`
-stays out of Auto. Multilingual audio support is not language conditioning:
+language from the audio and takes no hint, as do Orukeet, Fluid Speech Pro,
+Parakeet Ultra, and Granite Speech 5.0. A hint-taking model without
+`stt.capability.lang_detect` stays out of Auto. Multilingual audio support is
+not language conditioning:
 the pinned v3 GGUF has no `stt.parakeet.prompt.num_prompts` metadata, which gates
 language prompting in `transcribe-cpp-sys` 0.1.3.
 
@@ -924,6 +933,8 @@ Completed output                         // output
 │   │   -> joined with a space and sentence-aware capitalization (macOS, Windows)
 │   ├── Previous clipboard restored 500 ms later, unless something newer replaced it
 │   ├── Windows -> the transcript is marked out of clipboard history (Win+V) and cloud sync (#851)
+│   ├── Windows -> a paste only goes to a window that can take it: the desktop
+│   │   and taskbars keep the words on the clipboard and report "copied" (dictation.md)
 │   ├── Labs > Keep dictation on clipboard (every OS, off) -> the dictation stays on the clipboard (labs.md)
 │   │   └── Windows -> kept as an ordinary entry, in history too
 │   └── Labs > Copy dictation only (macOS, Windows, off) -> clipboard only: no paste, typing, or restore (labs.md)
@@ -1625,12 +1636,15 @@ The picker saves the name Finder shows for the bundle's file, which can differ
 from the name the running app reports (`Rex Beta.app` runs as `Rex`,
 `Visual Studio Code.app` as `Code`). The macOS frontmost read also keeps
 Finder's name for the frontmost bundle (`ContextSnapshot::bundle_name`, set
-only when it differs), and `application_is` accepts either, so Modes and
-Labs › YOLO mode match an app under both names. Checked by
-`an_application_selector_matches_the_bundles_finder_name_too` (context.rs)
-and `a_picked_app_sends_under_its_finder_name_or_its_own` (yolo_mode.rs).
+only when it differs), and `application_is` accepts either, so Modes,
+Labs › YOLO mode, and Labs › Switch model with app match an app under both
+names. Checked by
+`an_application_selector_matches_the_bundles_finder_name_too` (context.rs),
+`a_picked_app_sends_under_its_finder_name_or_its_own` (yolo_mode.rs), and
+`a_mode_picked_under_its_finder_name_switches` (app_model_switching.rs).
 **Fixed on dev, Nov 19 2026:** before, a picked app whose file name differs
-from its own name never activated its Mode and YOLO mode never sent in it.
+from its own name never activated its Mode, YOLO mode never sent in it, and
+Switch model with app never switched to its mode's model.
 
 **Fixed in 2.1.14:** through 2.1.13, a mode saved with that Finder
 preference enabled never activates and every dictation falls back to Global.

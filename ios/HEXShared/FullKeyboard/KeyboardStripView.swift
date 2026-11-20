@@ -18,10 +18,7 @@ final class KeyboardStripView: UIView {
     }
     var onSelectSuggestion: ((KeyboardSuggestion) -> Void)?
     var onUndoDictation: (() -> Void)?
-    var onPaste: ((String) -> Void)? {
-        get { pasteReceiver.onPaste }
-        set { pasteReceiver.onPaste = newValue }
-    }
+    var onPaste: (() -> Void)?
     var onNextKeyboard: (() -> Void)?
 
     private let statusLabel = UILabel()
@@ -31,10 +28,9 @@ final class KeyboardStripView: UIView {
     private var showsUndo = false
     private var statusText: String?
     private var clipboard: KeyboardClipboardOffer?
-    private let pasteReceiver = KeyboardPasteReceiver()
-    /// `UIPasteControl`'s configuration is immutable once created, so a palette change
-    /// replaces the control.
-    private var pasteControl = UIPasteControl(configuration: UIPasteControl.Configuration())
+    /// A plain chip: `UIPasteControl` renders as an empty blue box inside a keyboard
+    /// extension (TestFlight build 4), so this reads the clipboard on tap instead.
+    private let pasteControl = UIButton(type: .custom)
     private let nextKeyboardChip = UIButton(type: .custom)
 
     override init(frame: CGRect) {
@@ -62,10 +58,21 @@ final class KeyboardStripView: UIView {
         undoChip.configuration = chip
         undoChip.isHidden = true
         undoChip.addTarget(self, action: #selector(handleUndo), for: .touchUpInside)
+        var paste = UIButton.Configuration.plain()
+        paste.image = UIImage(
+            systemName: "doc.on.clipboard",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 12.5, weight: .medium)
+        )
+        paste.imagePadding = 6
+        paste.title = "Paste"
+        paste.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 13, bottom: 0, trailing: 13)
+        paste.background.cornerRadius = 15
+        pasteControl.configuration = paste
         pasteControl.isHidden = true
+        pasteControl.addTarget(self, action: #selector(handlePaste), for: .touchUpInside)
+        addSubview(pasteControl)
         addSubview(undoChip)
 
-        addSubview(pasteReceiver)
         var next = UIButton.Configuration.plain()
         next.image = UIImage(
             systemName: "keyboard",
@@ -140,19 +147,8 @@ final class KeyboardStripView: UIView {
         return currentSuggestions.isEmpty
     }
 
-    private func rebuildPasteControl() {
-        let configuration = UIPasteControl.Configuration()
-        configuration.displayMode = .iconAndLabel
-        configuration.cornerStyle = .capsule
-        configuration.baseForegroundColor = palette.textBase
-        configuration.baseBackgroundColor = palette.chipFill
-        let control = UIPasteControl(configuration: configuration)
-        control.target = pasteReceiver
-        control.isHidden = pasteControl.isHidden
-        control.frame = pasteControl.frame
-        pasteControl.removeFromSuperview()
-        pasteControl = control
-        addSubview(control)
+    @objc private func handlePaste() {
+        onPaste?()
     }
 
     @objc private func handleNextKeyboard() {
@@ -161,7 +157,10 @@ final class KeyboardStripView: UIView {
 
     private func applyPalette() {
         statusLabel.textColor = palette.textMuted
-        rebuildPasteControl()
+        var paste = pasteControl.configuration
+        paste?.baseForegroundColor = palette.textBase
+        paste?.background.backgroundColor = palette.chipFill
+        pasteControl.configuration = paste
         var next = nextKeyboardChip.configuration
         next?.baseForegroundColor = palette.textMuted
         next?.background.backgroundColor = palette.chipFill
@@ -177,14 +176,14 @@ final class KeyboardStripView: UIView {
     }
 
     private var contentCenterY: CGFloat {
-        inSystemPlatter ? bounds.height * 0.42 : bounds.height * 0.50
+        bounds.height * 0.5
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         let midY = contentCenterY
         statusLabel.frame = CGRect(x: 16, y: max(0, midY - 12), width: max(0, bounds.width - 32), height: 24)
-        let chipH = min(28, max(24, bounds.height - 5))
+        let chipH = min(34, max(24, bounds.height - 10))
         let chipSize = undoChip.sizeThatFits(CGSize(width: bounds.width, height: chipH))
         undoChip.frame = CGRect(
             x: (bounds.width - chipSize.width) / 2,
@@ -192,7 +191,7 @@ final class KeyboardStripView: UIView {
             width: chipSize.width,
             height: chipH
         )
-        let pasteW: CGFloat = 96
+        let pasteW = pasteControl.sizeThatFits(CGSize(width: bounds.width, height: chipH)).width
         let nextSize = nextKeyboardChip.sizeThatFits(CGSize(width: bounds.width, height: chipH))
         let pair = !pasteControl.isHidden && !nextKeyboardChip.isHidden
         let gap: CGFloat = 8
@@ -270,25 +269,26 @@ final class KeyboardStripView: UIView {
 
         override func draw(_ rect: CGRect) {
             guard let suggestion else { return }
-            let midY = inSystemPlatter ? bounds.height * 0.42 : bounds.height * 0.50
-            let pillH = min(26, max(22, bounds.height - 6))
+            let midY = bounds.height * 0.5
+            // Like Apple's strip, the highlight fills its slot, 4 pt in from each edge.
+            let pillH = max(22, bounds.height - 8)
             let pillInset = CGRect(
-                x: 5,
+                x: 4,
                 y: max(0.5, midY - pillH / 2),
-                width: max(0, bounds.width - 10),
+                width: max(0, bounds.width - 8),
                 height: pillH
             )
             if isHighlighted {
                 palette.keyPressedFill.setFill()
-                UIBezierPath(roundedRect: pillInset, cornerRadius: 8).fill()
+                UIBezierPath(roundedRect: pillInset, cornerRadius: 10).fill()
             } else if suggestion.willAutoReplace {
                 palette.selectFill.setFill()
-                UIBezierPath(roundedRect: pillInset, cornerRadius: 8).fill()
+                UIBezierPath(roundedRect: pillInset, cornerRadius: 10).fill()
             }
 
             let isLiteral = suggestion.kind == .keepLiteral
             let font = UIFont.systemFont(
-                ofSize: 15.5,
+                ofSize: 17,
                 weight: suggestion.willAutoReplace ? .medium : .regular
             )
             let ink = isLiteral && !suggestion.willAutoReplace ? palette.textBase.withAlphaComponent(0.88) : palette.textBase
@@ -301,7 +301,7 @@ final class KeyboardStripView: UIView {
             var size = (drawString as NSString).size(withAttributes: attributes)
             if size.width > maxTextW {
                 let smallAttrs: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: 13.5, weight: suggestion.willAutoReplace ? .medium : .regular),
+                    .font: UIFont.systemFont(ofSize: 15, weight: suggestion.willAutoReplace ? .medium : .regular),
                     .foregroundColor: ink,
                 ]
                 size = (drawString as NSString).size(withAttributes: smallAttrs)

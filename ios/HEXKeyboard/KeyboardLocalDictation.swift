@@ -14,7 +14,7 @@ final class KeyboardLocalDictation {
         case idle
         case recording(jobID: String, startedAt: TimeInterval)
         case transcribing(jobID: String)
-        case finished(jobID: String, resultID: String, transcript: String)
+        case finished(jobID: String, resultID: String, transcript: String, heard: String?, stages: DictationStages?)
         case failed(message: String, until: TimeInterval)
     }
 
@@ -23,6 +23,9 @@ final class KeyboardLocalDictation {
     private var pcmFile: KeyboardPCMFile?
     private var loudness: Float = -62
     private var transcription: Task<Void, Never>?
+    /// Learn how I type's dictation fixes, read when a dictation starts; empty while off.
+    var corrections: () -> [DictationCorrection] = { [] }
+    private var activeCorrections: [DictationCorrection] = []
 
     static var isSupported: Bool {
         if #available(iOS 26.0, *) { return true }
@@ -51,14 +54,16 @@ final class KeyboardLocalDictation {
             )
         case .transcribing(let jobID):
             return KeyboardSnapshot(state: .transcribing, heartbeat: now, expiresAt: now + 60, jobID: jobID)
-        case .finished(let jobID, let resultID, let transcript):
+        case .finished(let jobID, let resultID, let transcript, let heard, let stages):
             return KeyboardSnapshot(
                 state: .ready,
                 heartbeat: now,
                 expiresAt: now + 1,
                 jobID: jobID,
                 resultID: resultID,
-                transcript: transcript
+                transcript: transcript,
+                heard: heard,
+                stages: stages
             )
         case .failed(let message, let until):
             guard until > now else {
@@ -70,7 +75,7 @@ final class KeyboardLocalDictation {
     }
 
     func markDelivered(resultID: String) {
-        if case .finished(_, let current, _) = phase, current == resultID {
+        if case .finished(_, let current, _, _, _) = phase, current == resultID {
             phase = .idle
         }
     }
@@ -91,6 +96,7 @@ final class KeyboardLocalDictation {
         }
         let jobID = UUID().uuidString
         let requestedAt = Date()
+        activeCorrections = corrections()
         loudness = -62
         phase = .recording(jobID: jobID, startedAt: requestedAt.timeIntervalSince1970)
         let capture = capture ?? KeyboardWebCapture(host: host)
@@ -180,14 +186,42 @@ final class KeyboardLocalDictation {
         guard #available(iOS 26.0, *) else { return }
         phase = .transcribing(jobID: jobID)
         let url = file.url
+        let fixes = activeCorrections
+        let hints = DictationCorrections.recognitionHints(vocabulary: [], corrections: fixes)
         transcription = Task { [weak self] in
             let started = Date()
             do {
-                let text = try await KeyboardSpeech.transcribe(url)
+                let (heard, locale) = try await KeyboardSpeech.transcribe(url, hints: hints)
                 try? FileManager.default.removeItem(at: url)
+                let corrected = DictationCorrections.apply(fixes, to: heard)
+                let style = KeyboardBridge().style
+                let cleaned = await CleanupTagger.cleanIfEnabled(corrected, style: style)
+                let translated = await DictationTranslator.translateIfEnabled(cleaned)
+                let text = translated ?? cleaned
                 KeyboardProbeLog.shared.write("transcribed in \(String(format: "%.2f", Date().timeIntervalSince(started))) s: \(text.count) chars \(KeyboardProbeLog.memory())")
                 guard let self, !Task.isCancelled else { return }
-                self.phase = .finished(jobID: jobID, resultID: UUID().uuidString, transcript: text)
+                // Record typing logs keeps every step; nothing is kept while it is off.
+                let stages: DictationStages? = TypingLogSettings().isEnabled
+                    ? DictationStages(
+                        engine: "Apple Speech (keyboard)",
+                        locale: locale,
+                        style: style.rawValue,
+                        recordedMS: Int((seconds * 1000).rounded()),
+                        transcribeMS: Int((Date().timeIntervalSince(started) * 1000).rounded()),
+                        raw: heard,
+                        fixed: corrected,
+                        tagged: CleanupTaggerSettings().isEnabled && style != .verbatim ? cleaned : nil,
+                        translated: translated
+                    )
+                    : nil
+                // A translation's words can't be compared with what was heard, so it isn't learned from.
+                self.phase = .finished(
+                    jobID: jobID,
+                    resultID: UUID().uuidString,
+                    transcript: text,
+                    heard: translated == nil ? heard : nil,
+                    stages: stages
+                )
             } catch {
                 try? FileManager.default.removeItem(at: url)
                 guard let self, !Task.isCancelled else { return }
@@ -439,7 +473,8 @@ private enum KeyboardSpeech {
         }
     }
 
-    static func transcribe(_ url: URL) async throws -> String {
+    /// The transcript and the speech locale's identifier.
+    static func transcribe(_ url: URL, hints: [String]) async throws -> (String, String) {
         let log = KeyboardProbeLog.shared
         // Same order as the app's AppleSpeechTranscriber.preferredLocale(), so the
         // keyboard uses the assets Hex downloaded.
@@ -471,6 +506,12 @@ private enum KeyboardSpeech {
             options: SpeechAnalyzer.Options(priority: .userInitiated, modelRetention: .whileInUse)
         )
         let file = try AVAudioFile(forReading: url)
+        // Learn how I type's meant words, best effort, as the app does for custom vocabulary.
+        if !hints.isEmpty {
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = hints
+            try? await analyzer.setContext(context)
+        }
         try await analyzer.start(inputAudioFile: file, finishAfterFile: true)
         log.write("analyzer started \(KeyboardProbeLog.memory())")
 
@@ -480,7 +521,7 @@ private enum KeyboardSpeech {
         }
         let text = String(transcript.characters).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw Failure.empty }
-        return text
+        return (text, locale.identifier)
     }
 }
 

@@ -42,7 +42,9 @@ feature with its own pane joins the sidebar as a normal item while on and is
 hidden while off; a behaviour-only feature is just its toggle. Today: Meetings
 (beta), Voice Filter (Dev; locked on while its macOS driver is installed, and
 a stable build with the driver keeps its pane for Uninstall alone), Playground
-(Dev), Live text, Live chapters, Vocabulary help, Words on screen
+(Dev), Paste Last picker (Dev, macOS; the mixed dictation-and-annotation
+picker and History, `labs.paste_last_picker`), Live text, Live chapters,
+Vocabulary help, Words on screen
 (macOS), Rewrite reads nearby text (macOS), Switch model with keyboard
 language (#216), Mouse shortcuts (#209, macOS), Also pause the browser (#301,
 macOS), Share dictation shortcut (#176, Windows), Free memory when idle
@@ -204,7 +206,7 @@ substitute for source inspection or a second roadmap.
 - `transcription/model_details`: what a catalog model's details view adds:
   licence credit, source and licence links, the publisher's notice, measured
   memory, and benchmarks the publisher (never Hex) measured (Parakeet Ultra,
-  Orukeet).
+  Orukeet, Fluid Speech Pro).
 - `transcription/custom_models`, `transcription/gguf_header`: your own speech
   models: GGUF imports checked from their header alone (family, variant,
   languages, F32/F16/Q8_0 tensors, plus Q4_K/Q5_K/Q6_K under Labs › Smaller
