@@ -214,7 +214,7 @@ private struct OnboardingAllowPage: View {
                     .padding(.vertical, 4)
                     .background(HexTheme.bgBase, in: RoundedRectangle(cornerRadius: HexTheme.cardRadius, style: .continuous))
 
-                    Text("Keyboards  ›  Hex Keyboard  ›  Allow Full Access")
+                    Text("Keyboards  ›  \(AppIdentity.keyboardDisplayName)  ›  Allow Full Access")
                         .font(.system(size: 13))
                         .foregroundStyle(HexTheme.textMuted)
                         .padding(.horizontal, 4)
