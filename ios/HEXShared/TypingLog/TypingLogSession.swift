@@ -82,6 +82,15 @@ nonisolated struct TypingLogTraits: Equatable, Sendable {
 }
 
 extension TypingLogTraits {
+    /// `UITextDocumentProxy.documentIdentifier` is imported as an implicitly unwrapped
+    /// `UUID!`, and some hosts answer it with nothing: reading the property traps in
+    /// `UUID._unconditionallyBridgeFromObjectiveC` on the keyboard's main thread. Read it
+    /// through KVC instead, so a host with no identifier simply names no document.
+    @MainActor
+    static func documentIdentifier(of proxy: UITextDocumentProxy) -> UUID? {
+        (proxy as AnyObject).value(forKey: "documentIdentifier") as? UUID
+    }
+
     @MainActor
     init(_ traits: UITextInputTraits, document: UUID? = nil) {
         keyboardType = Self.name(traits.keyboardType ?? .default)
